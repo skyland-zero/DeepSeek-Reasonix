@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"reasonix/internal/evidence"
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 )
 
 // Local plan-archive helpers (fork-owned). They complement upstream's

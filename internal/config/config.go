@@ -231,14 +231,14 @@ const (
 // UIConfig controls CLI presentation-only settings. Desktop appearance is kept in
 // DesktopConfig so desktop preferences cannot alter terminal output or prompts.
 type UIConfig struct {
-	Theme          string `toml:"theme"`           // auto|dark|light; empty resolves to auto
-	ThemeStyle     string `toml:"theme_style"`     // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
-	ShortcutLayout string `toml:"shortcut_layout"` // classic|desktop; accepted for compatibility
-	CloseBehavior  string `toml:"close_behavior"`  // legacy desktop close behavior; prefer desktop.close_behavior
-	ShowReasoning  bool   `toml:"show_reasoning"`  // Ctrl+O / /verbose: show thinking text in CLI; false = collapsed
-	ShowTurnUsage  bool   `toml:"show_turn_usage"` // show per-request token/cost receipts in the CLI/TUI transcript
-	ShowTurnReceipt bool  `toml:"show_turn_receipt"` // show per-turn token/cost receipt in transcript; false = hidden
-	CursorShape    string `toml:"cursor_shape"`    // block|underline|bar; empty defaults to bar
+	Theme           string `toml:"theme"`             // auto|dark|light; empty resolves to auto
+	ThemeStyle      string `toml:"theme_style"`       // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
+	ShortcutLayout  string `toml:"shortcut_layout"`   // classic|desktop; accepted for compatibility
+	CloseBehavior   string `toml:"close_behavior"`    // legacy desktop close behavior; prefer desktop.close_behavior
+	ShowReasoning   bool   `toml:"show_reasoning"`    // Ctrl+O / /verbose: show thinking text in CLI; false = collapsed
+	ShowTurnUsage   bool   `toml:"show_turn_usage"`   // show per-request token/cost receipts in the CLI/TUI transcript
+	ShowTurnReceipt bool   `toml:"show_turn_receipt"` // show per-turn token/cost receipt in transcript; false = hidden
+	CursorShape     string `toml:"cursor_shape"`      // block|underline|bar; empty defaults to bar
 }
 
 // CLIConfig controls user-global native CLI behavior. It is separate from
