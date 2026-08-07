@@ -1822,7 +1822,7 @@ func Default() *Config {
 		ConfigVersion:    5,
 		DefaultModel:     "deepseek-flash",
 		CredentialsStore: CredentialsStoreAuto,
-		UI:               UIConfig{Theme: "auto", ShowTurnUsage: true, ShowTurnReceipt: true},
+		UI:               UIConfig{Theme: "auto", ShowTurnUsage: true, ShowTurnReceipt: false},
 		Desktop:          DesktopConfig{DefaultToolApprovalMode: "auto", ConversationWidth: "standard"},
 		Notifications: NotificationsConfig{
 			Enabled:         false,
