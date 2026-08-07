@@ -26,3 +26,37 @@
 *.yml text eol=lf
 .githooks/** text eol=lf
 benchmarks/**/*.sh text eol=lf
+
+# Local-owned fork files: keep our version on upstream merges.
+internal/cli/toolcard.go merge=keep-ours
+internal/cli/transcript.go merge=keep-ours
+internal/cli/md.go merge=keep-ours
+internal/cli/diffview.go merge=keep-ours
+internal/cli/status_footer.go merge=keep-ours
+internal/cli/theme.go merge=keep-ours
+internal/cli/banner.go merge=keep-ours
+internal/cli/castle.go merge=keep-ours
+internal/cli/md_table.go merge=keep-ours
+internal/cli/table_copy.go merge=keep-ours
+internal/cli/slash_quota.go merge=keep-ours
+internal/cli/chat_render_test.go merge=keep-ours
+internal/cli/chat_tui_test.go merge=keep-ours
+internal/cli/transcript_test.go merge=keep-ours
+internal/cli/md_test.go merge=keep-ours
+internal/cli/diffview_test.go merge=keep-ours
+internal/cli/toolcard_test.go merge=keep-ours
+internal/cli/status_footer_test.go merge=keep-ours
+internal/cli/theme_test.go merge=keep-ours
+internal/cli/banner_test.go merge=keep-ours
+internal/cli/md_table_test.go merge=keep-ours
+internal/cli/table_copy_test.go merge=keep-ours
+internal/cli/slash_quota_test.go merge=keep-ours
+internal/cli/statusline_test.go merge=keep-ours
+internal/cli/consecutive_tool_markers_test.go merge=keep-ours
+internal/cli/math_e2e_test.go merge=keep-ours
+internal/cli/fixed_wrap_test.go merge=keep-ours
+internal/opencodego/** merge=keep-ours
+internal/control/plan_archive_local.go merge=keep-ours
+SKYCODE.md merge=keep-ours
+skycode.example.toml merge=keep-ours
+npm/skycode/** merge=keep-ours
