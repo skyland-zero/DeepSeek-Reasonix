@@ -1,0 +1,39 @@
+{
+  "name": "skycode",
+  "version": "0.0.0",
+  "description": "Cache-first DeepSeek coding agent for the terminal.",
+  "bin": {
+    "skycode": "bin/skycode.js"
+  },
+  "files": [
+    "bin/skycode.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/esengine/DeepSeek-Reasonix#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/esengine/DeepSeek-Reasonix.git"
+  },
+  "bugs": {
+    "url": "https://github.com/esengine/DeepSeek-Reasonix/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "ai",
+    "agent",
+    "cli",
+    "coding-assistant",
+    "tui"
+  ],
+  "optionalDependencies": {
+    "@skycode/cli-darwin-arm64": "0.0.0",
+    "@skycode/cli-darwin-x64": "0.0.0",
+    "@skycode/cli-linux-arm64": "0.0.0",
+    "@skycode/cli-linux-x64": "0.0.0",
+    "@skycode/cli-win32-arm64": "0.0.0",
+    "@skycode/cli-win32-x64": "0.0.0"
+  }
+}

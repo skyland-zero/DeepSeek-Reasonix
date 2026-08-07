@@ -42,6 +42,16 @@ mem.prof
 /desktop/reasonix.toml
 /desktop/skycode.toml
 
+# Project-local Skycode state; keep the checked-in review command.
+/.skycode/*
+!/.skycode/commands/
+!/.skycode/commands/review.md
+
+# Stray Skycode state written under a package dir by a test whose RealPath
+# checks need a stable anchor.
+internal/**/.skycode/
+desktop/**/.skycode/
+
 # Node / frontend dependencies and caches
 node_modules/
 .pnpm-store/
