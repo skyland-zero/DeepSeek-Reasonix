@@ -170,7 +170,9 @@ func TestSSHConfigAliasesIncludeImportedFiles(t *testing.T) {
 	// Installed OpenSSH rejects config files whose ACL is wider than the owner,
 	// which t.TempDir() cannot guarantee on Windows. Include handling is the
 	// parser's contract here; the ssh -G path has its own stubbed tests.
-	src.resolveOpenSSH = nil
+	src.resolveOpenSSH = func(context.Context, string, string) ([]byte, error) {
+		return nil, exec.ErrNotFound
+	}
 	aliases := src.Aliases()
 	if len(aliases) != 2 || aliases[0].Alias != "included-box" || aliases[1].Alias != "direct-box" {
 		t.Fatalf("included aliases = %+v", aliases)

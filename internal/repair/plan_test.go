@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1399,6 +1400,9 @@ func TestRepairPlanPreviewIDRejectsSameContentDifferentTargets(t *testing.T) {
 }
 
 func TestRepairMutationLockConvergesSymlinkAliases(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires elevated privileges on Windows CI")
+	}
 	base := t.TempDir()
 	realDir := filepath.Join(base, "real", "project")
 	if err := os.MkdirAll(realDir, 0o700); err != nil {
@@ -1574,6 +1578,9 @@ func TestRepairMutationLockSerializesUpdateRollbackAndPrepare(t *testing.T) {
 }
 
 func TestRepairPlanPreviewIDDistinguishesLeafSymlinkTargets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires elevated privileges on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
 	base := t.TempDir()

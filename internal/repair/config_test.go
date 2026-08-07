@@ -921,6 +921,9 @@ func TestSnapshotUndoAcrossSeparateStateHome(t *testing.T) {
 // snapshot as a plain file (without writing through the link), and undo
 // brings back the original symlink node itself.
 func TestRestoreConfigSnapshotPreservesSymlinkThroughUndo(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires elevated privileges on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
 	dest := config.UserConfigPath()
@@ -1025,6 +1028,9 @@ func TestRestoreConfigSnapshotCrossDeviceCleanupKeepsPlainConfig(t *testing.T) {
 // variant: the sibling backup keeps the original link node, and failure
 // cleanup must put that link back without writing through it.
 func TestRestoreConfigSnapshotCrossDeviceCleanupRestoresSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires elevated privileges on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
 	dest := config.UserConfigPath()

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -246,6 +247,9 @@ func TestUndoLastRepairRejectsBytesDifferentFromVerifiedBackup(t *testing.T) {
 }
 
 func TestUndoLastRepairRejectsLinkDifferentFromVerifiedBackup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires elevated privileges on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
 	configPath := config.UserConfigPath()
@@ -288,6 +292,9 @@ func TestUndoLastRepairRejectsLinkDifferentFromVerifiedBackup(t *testing.T) {
 }
 
 func TestReadLastRepairRejectsRestoreBackupParentSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires elevated privileges on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
 	restoreRoot := filepath.Join(home, "repair", "restore-backups")
@@ -326,6 +333,9 @@ func TestReadLastRepairRejectsRestoreBackupParentSymlinkEscape(t *testing.T) {
 // quarantine rename moved the link, so undo must recreate a link, not
 // materialize the followed content as a regular file.
 func TestUndoLastRepairRestoresSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires elevated privileges on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
 	configPath := config.UserConfigPath()
@@ -371,6 +381,9 @@ func TestUndoLastRepairRestoresSymlink(t *testing.T) {
 // A dangling quarantined symlink must still be restorable: preflight and
 // restore must not follow the link when judging its presence.
 func TestUndoLastRepairRestoresDanglingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires elevated privileges on Windows CI")
+	}
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
 	configPath := config.UserConfigPath()
