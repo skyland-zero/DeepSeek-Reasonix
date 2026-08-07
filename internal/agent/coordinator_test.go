@@ -963,9 +963,7 @@ func TestExecutorHandoffRetryMessageKeepsUserChoicesInteractive(t *testing.T) {
 	msg := executorHandoffRetryMessage()
 	lower := strings.ToLower(msg)
 	for _, want := range []string{
-		"ask tool",
-		"wait for its tool result",
-		"do not ask in prose",
+		"note the choice in your reply",
 		"do not claim the user answered",
 	} {
 		if !strings.Contains(lower, want) {

@@ -55,14 +55,7 @@ rollback only when the change is risky or difficult to reverse. Label assumption
 instead of presenting inferred paths or commands as verified facts.
 
 If execution must stop for explicit user approval of the plan, end the plan with
-a final line containing exactly [planner_requires_approval]. If execution needs
-a user-owned decision or missing user-provided value before it can be safe, do
-not ask in prose; include one structured block:
-<planner-ask>
-question: the concrete question
-option: recommended safe/default choice
-option: alternative choice
-</planner-ask>
+a final line containing exactly [planner_requires_approval].
 
 Crucial: You only have research tools plus the stable use_capability proxy for
 authorized MCP. You do NOT have bash, execute, file writers, or other
@@ -352,7 +345,9 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 		Depth:  PlannerDepthFull,
 		Reason: "always_plan",
 	}
-	if c.plannerPolicy != nil {
+	if c.executor != nil && c.executor.PlanMode() {
+		decision = PlannerDecision{Route: PlannerRoutePlanForApproval, Depth: PlannerDepthFull, Reason: "tui_plan_mode"}
+	} else if c.plannerPolicy != nil {
 		decision = normalizePlannerDecision(c.plannerPolicy(ctx, input))
 	}
 	routeDetail := fmt.Sprintf("planner route=%s depth=%s reason=%s", decision.Route, decision.Depth, decision.Reason)
@@ -474,7 +469,7 @@ const (
 	plannerPlanNotApprovedNote        = "(The user did not approve this plan; execution was not started.)"
 	plannerPlanNotApprovedNotice      = "Plan not approved; nothing was executed. Reply to continue."
 	plannerPlanAwaitingApprovalNote   = "(The user requested planning before execution; no action was started without host approval.)"
-	plannerPlanAwaitingApprovalNotice = "Plan ready; execution was not started without approval."
+	plannerPlanAwaitingApprovalNotice = "Plan ready. Please provide feedback in the chat, or toggle Plan mode off and reply 'go' to execute."
 	plannerPlanOnlyNote               = "(The user explicitly requested a plan without execution; no action was started.)"
 	plannerPlanOnlyNotice             = "Plan ready; the request explicitly excluded execution."
 	plannerDecisionUnansweredNote     = "(The user did not provide the requested decision; execution was not started.)"

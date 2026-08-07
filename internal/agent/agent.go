@@ -593,6 +593,7 @@ const (
 // prompt and tool schemas stay untouched, while the caller supplies the
 // model-facing Marker in a user turn.
 func (a *Agent) SetPlanMode(v bool) { a.planMode.Store(v) }
+func (a *Agent) PlanMode() bool     { return a.planMode.Load() }
 
 // SetTools replaces the agent's tool registry. The next API call picks up the
 // new tool schema; tools already cached in the provider prefix are unaffected
@@ -2218,7 +2219,7 @@ func executorHandoffRetryMessage() string {
 The tool schema is still attached to this executor request. Do not invent that MCP servers or tools are unavailable; only report an unavailable tool after a real tool call or host error proves it.
 
 Do not answer as the planner and do not ask how to trigger the executor.
-Use your available tools now to carry out the task. If carrying out the planner's instructions requires a user-owned choice or review, call the ask tool with concrete options and wait for its tool result; do not ask in prose, and do not claim the user answered unless an actual ask tool result or a new user message says so. If a write or command is blocked by permissions or workspace boundaries, state that specific blocker and ask for the needed approval/path.`
+Use your available tools now to carry out the task. If carrying out the planner's instructions requires a user-owned choice or review, note the choice in your reply and stop for the user; do not claim the user answered unless a new user message says so. If a write or command is blocked by permissions or workspace boundaries, state that specific blocker and ask for the needed approval/path.`
 }
 
 func hasVisibleFinalAnswer(text string) bool {

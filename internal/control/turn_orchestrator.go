@@ -68,16 +68,6 @@ func (o *turnOrchestrator) runGoalContinuationTurnWithRawDisplay(
 	return true, err
 }
 
-func (o *turnOrchestrator) runComposedSyntheticTurn(ctx context.Context, text string) error {
-	c := o.c
-	ctx = agent.WithRawUserInput(ctx, text)
-	ctx = c.withPlannerTurnMetadata(ctx, text, true, c.messageCount())
-	return c.runner.Run(ctx, c.ComposeSynthetic(text))
-}
-
-// runSubagentSkillGoalLoop executes a slash-invoked runAs=subagent skill as a
-// real isolated child turn, then lets an active goal continue just as an inline
-// skill turn did before.
 func (o *turnOrchestrator) runSubagentSkillGoalLoop(ctx context.Context, sk skill.Skill, task, raw, display string, runner skill.SubagentRunner, planMode bool) error {
 	return o.runSubagentSkillTurnsGoalLoop(ctx, []skill.Skill{sk}, task, raw, display, runner, planMode)
 }
@@ -226,6 +216,14 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 		return nil
 	}
 	startMessages := c.messageCount()
+	// Snapshot the canonical task list before the turn so the plan gate below
+	// can tell a fresh plan-produced list (archived when the proposal lands)
+	// from a stale list left over from a previous execution turn. Plan mode is
+	// snapshotted too: it is a turn-boundary flag, and reading the live value
+	// here would let a mid-turn toggle archive an execution turn's unfinished
+	// list as completed.
+	planTodosBefore := o.c.planTodosSnapshot()
+	planModeAtStart := o.c.PlanMode()
 	defer c.snapshotActivityIfChanged(startMessages)
 	defer c.recordDisplayForNewUser(startMessages, turn.display)
 	if turn.editedOriginal != "" {
@@ -340,9 +338,9 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 		c.clearInFlightTurn()
 		return err
 	}
-	c.mu.Lock()
-	plan := c.planMode
-	c.mu.Unlock()
+	// The turn-boundary plan-mode snapshot decides the gate: a mid-turn toggle
+	// must not let an execution turn's archive path run.
+	plan := planModeAtStart
 	if !plan {
 		return nil
 	}
@@ -352,40 +350,19 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	}
 	// The plan is already visible as the assistant's answer, so the request
 	// carries no subject — it's purely the gate.
-	allow, _, err := c.requestApproval(ctx, planApprovalTool, "", nil)
-	if err != nil {
-		return err
-	}
-	if !allow {
-		// The host decides whether denial means "revise and keep planning" or
-		// "exit without executing" by leaving plan mode on or switching it off.
-		return nil
-	}
-	c.SetPlanMode(false)
-	todoArgs := c.seedPlanTodos(proposal)
-	execStart := c.sessionMessageCount()
-	// Starting plan execution is a real Recovery Episode boundary even though
-	// the follow-up turn is synthetic.
-	c.beginRecoveryEpisode()
-	// The plan is the go-ahead: don't re-prompt for each write of the approved
-	// work. Auto-approve writers for the duration of this execution turn only; a
-	// later turn (even "continue") falls back to the normal per-tool approval.
-	c.approval.setPlanAutoApprove(true)
-	defer c.approval.setPlanAutoApprove(false)
-	err = func() error {
-		c.markInFlightTurn(execStart, false)
-		defer c.clearInFlightTurn()
-		return o.runComposedSyntheticTurn(ctx, planApprovedMessage)
-	}()
-	if err != nil {
-		if errors.Is(err, context.Canceled) && c.CancelRequested() {
-			c.stripInterruptedSyntheticTurnMessagesAfter(execStart)
-		}
-		return err
-	}
-	if todoArgs != "" && !c.hasTodoUpdateSince(execStart) {
-		c.completePlanTodos(todoArgs)
-	}
+	// [MODIFIED] To make plan mode non-blocking, we do not block on approval.
+	// The user will provide feedback in chat, or exit plan mode and type 'go'.
+	// allow, _, err := c.requestApproval(ctx, planApprovalTool, "", nil)
+	// if err != nil {
+	// 	return err
+	// }
+	// if !allow {
+	// 	return nil
+	// }
+	// The plan turn is done: if the model laid out a fresh task list, archive it
+	// (emit an all-completed synthetic todo_write) so the pinned panel does not
+	// stay stuck on pending planning steps until the user starts execution.
+	c.finishPlanTurnTodos(planTodosBefore)
 	return nil
 }
 

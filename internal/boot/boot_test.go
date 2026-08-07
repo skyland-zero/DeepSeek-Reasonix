@@ -3489,14 +3489,11 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	defer ctrl.Close()
 
 	sys := systemMessage(ctrl.History())
-	for _, want := range []string{
-		"User-owned choices",
-		"call the ask tool",
-		"Do not ask in prose",
-	} {
-		if !strings.Contains(sys, want) {
-			t.Fatalf("user decision policy missing %q from custom system prompt:\n%s", want, sys)
-		}
+	if !strings.Contains(sys, config.UserDecisionPolicy) {
+		t.Fatalf("user decision policy missing from custom system prompt:\n%s", sys)
+	}
+	if strings.Contains(config.UserDecisionPolicy, "ask tool") || strings.Contains(config.UserDecisionPolicy, "ask in prose") {
+		t.Fatalf("user decision policy must not mandate the ask tool:\n%s", config.UserDecisionPolicy)
 	}
 }
 

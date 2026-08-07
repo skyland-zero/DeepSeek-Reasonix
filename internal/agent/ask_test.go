@@ -118,7 +118,7 @@ func TestAskToolProviderContractStable(t *testing.T) {
 	tool := NewAskTool()
 	contract := tool.Description() + "\n" + string(provider.CanonicalizeSchema(tool.Schema()))
 	got := fmt.Sprintf("%x", sha256.Sum256([]byte(contract)))
-	const want = "f4c6efe84da2e964b3f8566b1f0921ca88812ae3ecfba46185d0439ae4f4c2a5"
+	const want = "85fd7e78e09d11843d54eb3950d31b8c308cc5a157f59578f0ffd8f59b9199bb"
 	if got != want {
 		t.Fatalf("ask provider contract hash = %s, want %s; tool description or canonical schema changed", got, want)
 	}

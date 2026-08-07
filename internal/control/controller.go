@@ -2236,11 +2236,12 @@ func (c *Controller) EnableInteractiveApproval() {
 	}); ok {
 		setter.SetConfigWriteApprover(configApprover)
 	}
-	if setter, ok := c.runner.(interface {
-		SetPlannerPlanApprover(agent.PlannerPlanApprover)
-	}); ok {
-		setter.SetPlannerPlanApprover(plannerPlanApprover{c: c})
-	}
+	// [MODIFIED] To make plan mode non-blocking, we do not register the TUI approver.
+	// if setter, ok := c.runner.(interface {
+	// 	SetPlannerPlanApprover(agent.PlannerPlanApprover)
+	// }); ok {
+	// 	setter.SetPlannerPlanApprover(plannerPlanApprover{c: c})
+	// }
 	if setter, ok := c.runner.(interface {
 		SetPlannerUserDecisionAsker(agent.PlannerUserDecisionAsker)
 	}); ok {

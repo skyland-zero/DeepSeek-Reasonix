@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"reasonix/internal/evidence"
+	"reasonix/internal/planmode"
 	"reasonix/internal/tool"
 )
 
@@ -67,6 +68,14 @@ func (todoWrite) Execute(ctx context.Context, args json.RawMessage) (string, err
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
+	// Plan mode treats todo_write as a proposal surface: serial-order and
+	// completion-transition guards assume execution bookkeeping that cannot
+	// exist while planning (complete_step is phase-blocked), so those checks
+	// are skipped and only structural validity is enforced. The flag is
+	// per-call (the agent stamps it from its live plan-mode flag): the chat
+	// TUI refuses mid-turn toggles, and hosts that switch plan mode between
+	// turns see the strict rules restored for execution.
+	planning := planmode.Active(ctx)
 	var done, active, pending int
 	for i, t := range p.Todos {
 		if t.Content == "" {
@@ -87,7 +96,26 @@ func (todoWrite) Execute(ctx context.Context, args json.RawMessage) (string, err
 		}
 	}
 	if err := evidence.ValidateSerialTodos(toEvidenceTodos(p.Todos)); err != nil {
-		return "", err
+		if !planning {
+			return "", err
+		}
+		// Plan mode is a proposal surface, not an execution ledger: the model
+		// lays out steps before any work exists, so serial-order rules that
+		// assume an in_progress item or a completed prefix do not apply yet.
+		// Normalize the list and re-validate so only structurally broken lists
+		// (orphan sub-steps, duplicate currents) still fail.
+		if err := evidence.ValidateSerialTodos(evidence.NormalizeSerialTodos(toEvidenceTodos(p.Todos))); err != nil {
+			return "", err
+		}
+	}
+	if planning {
+		// The canonical-transition guards below (current-item continuity,
+		// completed-prefix preservation, completion receipts) police execution
+		// bookkeeping. While planning, the model rewrites the proposed list
+		// freely — and complete_step is phase-blocked, so completion receipts
+		// could never exist to satisfy them. Skip them until execution starts.
+		return fmt.Sprintf("Todos updated: %d total — %d completed, %d in progress, %d pending.",
+			len(p.Todos), done, active, pending), nil
 	}
 	if !tool.HasPlanReplacementAuthorization(ctx) {
 		if err := verifyTodoCurrentContinuity(ctx, p.Todos); err != nil {

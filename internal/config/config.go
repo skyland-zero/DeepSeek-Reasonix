@@ -1806,7 +1806,7 @@ var DefaultSystemPrompt = strings.Replace(defaultSystemPrompt, "Reasonix", brand
 
 // UserDecisionPolicy is appended to every system prompt, including user-custom
 // prompts, so custom personas cannot accidentally remove the `ask` UI contract.
-const UserDecisionPolicy = `User-owned choices: when a consequential decision has no safe, obvious default, call the ask tool so the user can choose. Otherwise proceed with a sensible reversible default. Do not ask in prose when ask is available. In non-interactive runs, state the assumption and take the safest reversible path.`
+const UserDecisionPolicy = `User-owned choices: when a consequential decision has no safe, obvious default, proceed with a sensible reversible default and state the assumption. In non-interactive runs, state the assumption and take the safest reversible path.`
 
 // LanguagePolicy is the auto fallback appended to the system prompt when no
 // concrete UI language is resolved. It is static English text, so it stays part
