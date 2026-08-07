@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/event"
@@ -15,6 +16,36 @@ const (
 	statusFooterIndent   = "  "
 	statusFooterGroupGap = 2
 )
+
+// statusModeTag renders the local foreground-bold mode pill ("Auto", "YOLO",
+// "Plan", "Shell") that the upstream chat_tui.go View requests through this
+// hook, so all status-line styling stays in local-owned files.
+func (m chatTUI) statusModeTag(shellMode bool) string {
+	if shellMode {
+		return lipgloss.NewStyle().
+			Foreground(themeLipColor(statusShellTagColor())).
+			Bold(true).
+			PaddingRight(1).
+			Render("Shell")
+	}
+	color := statusAutoTagColor()
+	switch {
+	case m.ctrl.AutoApproveTools():
+		color = statusYoloTagColor()
+	case m.planMode:
+		color = statusPlanTagColor()
+	}
+	return lipgloss.NewStyle().
+		Foreground(themeLipColor(color)).
+		Bold(true).
+		PaddingRight(1).
+		Render(m.modeTagText())
+}
+
+func statusAutoTagColor() cliColor  { return activeCLITheme.accent }
+func statusPlanTagColor() cliColor  { return activeCLITheme.info }
+func statusYoloTagColor() cliColor  { return activeCLITheme.danger }
+func statusShellTagColor() cliColor { return activeCLITheme.success }
 
 func footerLabel(label string) string {
 	return themeFg(activeCLITheme.subtle, label)
@@ -52,11 +83,7 @@ func renderTurnReceipt(u *provider.Usage, p *provider.Pricing, d *event.CacheDia
 		return ""
 	}
 
-	total := shortTokens(u.TotalTokens) + " tok"
-	if u.Estimated {
-		total = "≈" + total
-	}
-	groups := []string{total}
+	groups := []string{shortTokens(u.TotalTokens) + " tok"}
 	if u.PromptTokens > 0 {
 		cached := u.CacheHitTokens
 		fresh := u.CacheMissTokens
@@ -75,9 +102,6 @@ func renderTurnReceipt(u *provider.Usage, p *provider.Pricing, d *event.CacheDia
 	}
 	if p != nil {
 		groups = append(groups, fmt.Sprintf("%s%.4f", p.Symbol(), p.Cost(u)))
-	}
-	if u.Estimated {
-		groups = append(groups, "estimated")
 	}
 
 	separator := footerHint(" · ")
@@ -129,9 +153,7 @@ func (m chatTUI) primaryStatusLine(modeTag string, shellMode, cancelRequested bo
 	case shellMode:
 		status += " · " + i18n.M.ShellModeHint
 	case m.ctrl != nil && m.ctrl.AutoApproveTools():
-		status += " · " + footerValue(i18n.M.ChatStatusYoloIdle) + " · " + footerHint(i18n.M.ChatStatusCycleHintCompact)
 	default:
-		status += " · " + footerValue(i18n.M.ChatStatusIdle) + " · " + footerHint(i18n.M.ChatStatusCycleHintCompact)
 	}
 	if mt := m.mouseTag(); mt != "" {
 		status += " · " + mt
@@ -139,58 +161,85 @@ func (m chatTUI) primaryStatusLine(modeTag string, shellMode, cancelRequested bo
 	return status
 }
 
-// statusModelWorkGroup is the bounded, session-level group placed at the right
-// edge of the first footer row. A custom statusline still replaces every
-// built-in data field, matching its existing configuration contract.
-func (m chatTUI) statusModelWorkGroup(maxWidth int) string {
+// statusCompactRight builds the compact right-hand side of the single status
+// row: model · effort · work · ↑in ↓out · cache · context · jobs.
+func (m chatTUI) statusCompactRight(maxWidth int) string {
 	if m.statuslineCmd != "" && m.statuslineOut != "" {
-		return ""
+		full := ansi.Strip(m.statuslineOut)
+		if visibleWidth(full) <= maxWidth {
+			return footerValue(m.statuslineOut)
+		}
+		return footerHint(compactMiddle(ansi.Strip(full), maxWidth))
 	}
-	model := strings.TrimSpace(m.label)
-	work := ""
+	sep := " · "
+	var parts []string
+
+	if model := strings.TrimSpace(m.label); model != "" {
+		parts = append(parts, footerInfo(model))
+	}
+	if effort := m.effortLevel; effort != "" {
+		if effort != "auto" {
+			parts = append(parts, themeStyle(activeCLITheme.info).Bold(true).Render(effort))
+		} else {
+			parts = append(parts, footerValue(effort))
+		}
+	}
 	if m.runtimeProfile != "" {
-		work = runtimeProfileDisplay(m.runtimeProfile)
+		parts = append(parts, footerSecondary(runtimeProfileDisplay(m.runtimeProfile)))
 	}
-	if maxWidth <= 0 {
-		maxWidth = 1
+	if m.ctrl != nil {
+		prompt, completion := 0, 0
+		if u := m.ctrl.LastUsage(); u != nil {
+			prompt, completion = u.PromptTokens, u.CompletionTokens
+		}
+		parts = append(parts, footerValue(fmt.Sprintf("↑%s ↓%s", shortTokens(prompt), shortTokens(completion))))
+
+		body := "0%"
+		rate := 0.0
+		if b, r, ok := m.cacheStatus(); ok {
+			body, rate = b, r
+		}
+		parts = append(parts, themeFg(cacheStatusColor(rate), body))
+
+		used, window := m.ctrl.ContextSnapshot()
+		pct := 0
+		if used > 0 && window > 0 {
+			pct = used * 100 / window
+		}
+		ctxColor := activeCLITheme.muted
+		switch {
+		case pct >= 85:
+			ctxColor = activeCLITheme.danger
+		case pct >= 60:
+			ctxColor = activeCLITheme.warn
+		}
+		parts = append(parts, themeFg(ctxColor, fmt.Sprintf("%s (%d%%)", shortTokens(used), pct)))
+		if jt := m.jobsTag(); jt != "" {
+			parts = append(parts, footerInfo(ansi.Strip(jt)))
+		}
 	}
 
-	const separator = "   "
-	tail := make([]string, 0, 2)
-	if effort := m.effortTag(); effort != "" {
-		tail = append(tail, effort)
-	}
-	if work != "" {
-		tail = append(tail, footerMetric(i18n.M.ChatStatusWorkLabel, footerSecondary(work)))
-	}
-	if model == "" && len(tail) == 0 {
+	if len(parts) == 0 {
 		return ""
 	}
 
-	fields := append([]string(nil), tail...)
-	if model != "" {
-		fields = append([]string{footerMetric(i18n.M.ChatStatusModelLabel, footerInfo(model))}, fields...)
-	}
-	full := strings.Join(fields, separator)
+	full := strings.Join(parts, sep)
 	if visibleWidth(full) <= maxWidth {
 		return full
 	}
 
-	// Model names own the flexible slot. Keep effort and work intact while they
-	// fit, and compact only the model before falling back to a bounded plain group.
-	if model != "" {
-		tailWidth := visibleWidth(strings.Join(tail, separator))
-		if len(tail) > 0 {
-			tailWidth += visibleWidth(separator)
+	if model := strings.TrimSpace(m.label); model != "" {
+		budget := maxWidth
+		for _, p := range parts[1:] {
+			budget -= visibleWidth(p) + len(sep)
 		}
-		modelBudget := maxWidth - tailWidth - visibleWidth(i18n.M.ChatStatusModelLabel+" ")
-		if modelBudget >= 4 {
-			modelField := footerMetric(i18n.M.ChatStatusModelLabel, footerInfo(compactMiddle(model, modelBudget)))
-			if len(tail) == 0 {
-				return modelField
-			}
-			return modelField + separator + strings.Join(tail, separator)
+		if budget >= 4 {
+			parts[0] = footerInfo(compactMiddle(model, budget))
 		}
+	}
+	full = strings.Join(parts, sep)
+	if visibleWidth(full) <= maxWidth {
+		return full
 	}
 	return footerHint(compactMiddle(ansi.Strip(full), maxWidth))
 }
@@ -263,9 +312,6 @@ func (m chatTUI) statusTelemetryGroups() []string {
 			data = append(data, footerMetric(i18n.M.ChatStatusJobsLabel, footerInfo(ansi.Strip(jt))))
 		}
 	}
-	if m.balance != "" {
-		data = append(data, footerMetric(i18n.M.ChatStatusBalanceLabel, footerValue(m.balance)))
-	}
 	return data
 }
 
@@ -276,14 +322,8 @@ func (m chatTUI) renderStatusBlock(primary string, width int) string {
 	if width <= 0 {
 		width = 1
 	}
-	primary = hideStatusHintWhenKeyNamesCannotFit(primary, width)
-	modelWork := m.statusModelWorkGroup(max(width-visibleWidth(statusFooterIndent), 1))
-	first := layoutStatusSides(primary, modelWork, width)
-	second := m.layoutGitTelemetry(width)
-	if second == "" {
-		return first
-	}
-	return first + "\n" + statusFooterDivider(width) + "\n" + second
+	right := m.statusCompactRight(max(width-visibleWidth(statusFooterIndent), 1))
+	return layoutStatusSides(primary, right, width)
 }
 
 // hideStatusHintWhenKeyNamesCannotFit keeps the readable Shift+Tab/Ctrl+Y
@@ -292,7 +332,7 @@ func (m chatTUI) renderStatusBlock(primary string, width int) string {
 // the optional shortcut help yields space to the composer.
 func hideStatusHintWhenKeyNamesCannotFit(primary string, width int) string {
 	hint := i18n.M.ChatStatusCycleHintCompact
-	for group := range strings.SplitSeq(hint, " · ") {
+	for _, group := range strings.Split(hint, " · ") {
 		if visibleWidth(statusFooterIndent+group) > width {
 			return strings.Replace(primary, " · "+footerHint(hint), "", 1)
 		}

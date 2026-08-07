@@ -15,8 +15,8 @@ import (
 )
 
 func TestConfigureCLIThemeSwitchesModeAndDefaultStyle(t *testing.T) {
-	t.Setenv("REASONIX_THEME", "")
-	t.Setenv("REASONIX_THEME_STYLE", "")
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	activeColorProfile = colorprofile.ANSI256
 
@@ -38,8 +38,8 @@ func TestConfigureCLIThemeSwitchesModeAndDefaultStyle(t *testing.T) {
 }
 
 func TestConfigureCLIThemeStyleOverride(t *testing.T) {
-	t.Setenv("REASONIX_THEME", "")
-	t.Setenv("REASONIX_THEME_STYLE", "")
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	activeColorProfile = colorprofile.ANSI256
 
@@ -58,14 +58,14 @@ func TestConfigureCLIThemeStyleOverride(t *testing.T) {
 }
 
 func TestConfigureCLIThemeHonorsEnvOverride(t *testing.T) {
-	t.Setenv("REASONIX_THEME", "ember")
-	t.Setenv("REASONIX_THEME_STYLE", "")
+	t.Setenv("SKYCODE_THEME", "ember")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	activeColorProfile = colorprofile.ANSI256
 
 	configureCLIThemeWithStyle("light", "glacier")
 	if activeCLITheme.name != "dark" || activeCLITheme.style != "ember" {
-		t.Fatalf("REASONIX_THEME override resolved %s/%s, want dark/ember", activeCLITheme.name, activeCLITheme.style)
+		t.Fatalf("SKYCODE_THEME override resolved %s/%s, want dark/ember", activeCLITheme.name, activeCLITheme.style)
 	}
 }
 
@@ -105,8 +105,8 @@ func TestThemeArgCompletion(t *testing.T) {
 }
 
 func TestRunThemeSubcommandSwitchesAccentAndTextarea(t *testing.T) {
-	t.Setenv("REASONIX_THEME", "")
-	t.Setenv("REASONIX_THEME_STYLE", "")
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	activeColorProfile = colorprofile.ANSI256
 	configureCLIThemeWithStyle("dark", "graphite")
@@ -184,8 +184,8 @@ func TestAutoThemeFallsBackToColorFGBG(t *testing.T) {
 }
 
 func TestApplyTextareaThemeClearsCursorLineBackground(t *testing.T) {
-	t.Setenv("REASONIX_THEME", "")
-	t.Setenv("REASONIX_THEME_STYLE", "")
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	activeColorProfile = colorprofile.ANSI256
 
@@ -220,8 +220,8 @@ func TestApplyTextareaThemeClearsCursorLineBackground(t *testing.T) {
 }
 
 func TestApplyTextareaThemeHonorsCursorShape(t *testing.T) {
-	t.Setenv("REASONIX_THEME", "")
-	t.Setenv("REASONIX_THEME_STYLE", "")
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	prevShape := cliCursorShape
 	defer func() { cliCursorShape = prevShape }()
@@ -251,26 +251,27 @@ func TestApplyTextareaThemeHonorsCursorShape(t *testing.T) {
 }
 
 func TestComposerBorderAndCursorTrackThemeAccent(t *testing.T) {
-	t.Setenv("REASONIX_THEME", "")
-	t.Setenv("REASONIX_THEME_STYLE", "")
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	activeColorProfile = colorprofile.ANSI256
 
 	for _, theme := range cliThemeStyles {
 		t.Run(theme.name, func(t *testing.T) {
 			configureCLITheme(theme.name)
-			want := themeLipColor(activeCLITheme.accent)
-			if got := inputBoxStyle.GetBorderTopForeground(); !reflect.DeepEqual(got, want) {
-				t.Fatalf("composer top border color = %v, want theme accent %v", got, want)
+			wantBorder := themeLipColor(activeCLITheme.border)
+			wantAccent := themeLipColor(activeCLITheme.accent)
+			if got := inputBoxStyle.GetBorderTopForeground(); !reflect.DeepEqual(got, wantBorder) {
+				t.Fatalf("composer top border color = %v, want theme border %v", got, wantBorder)
 			}
-			if got := inputBoxStyle.GetBorderBottomForeground(); !reflect.DeepEqual(got, want) {
-				t.Fatalf("composer bottom border color = %v, want theme accent %v", got, want)
+			if got := inputBoxStyle.GetBorderBottomForeground(); !reflect.DeepEqual(got, wantBorder) {
+				t.Fatalf("composer bottom border color = %v, want theme border %v", got, wantBorder)
 			}
 
 			ti := textarea.New()
 			applyTextareaTheme(&ti)
-			if got := ti.Styles().Cursor.Color; !reflect.DeepEqual(got, want) {
-				t.Fatalf("composer cursor color = %v, want theme accent %v", got, want)
+			if got := ti.Styles().Cursor.Color; !reflect.DeepEqual(got, wantAccent) {
+				t.Fatalf("composer cursor color = %v, want theme accent %v", got, wantAccent)
 			}
 		})
 	}
@@ -291,8 +292,8 @@ func TestComposerBorderAndCursorTrackThemeAccent(t *testing.T) {
 // racing bubbletea's input reader. The switch must resolve via the COLORFGBG
 // fallback instead, never invoking the probe.
 func TestRuntimeAutoThemeDoesNotProbeStdin(t *testing.T) {
-	t.Setenv("REASONIX_THEME", "")
-	t.Setenv("REASONIX_THEME_STYLE", "")
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
 	t.Setenv("COLORFGBG", "15;0")
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	activeColorProfile = colorprofile.ANSI256

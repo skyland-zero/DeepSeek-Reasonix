@@ -24,6 +24,7 @@ import (
 type mdRenderer struct {
 	md             goldmark.Markdown
 	width          int
+	streaming      bool // table bottom border skipped until commitPending finalises
 	copyMath       bool
 	copyMathPrefix string
 	nextCopyMathID int
@@ -215,7 +216,10 @@ func (r *mdRenderer) renderBlock(buf *strings.Builder, node ast.Node, src []byte
 	case *extast.Table:
 		r.renderTable(buf, n, src, indent)
 	case *ast.ThematicBreak:
-		w := max(r.width-indent, 8)
+		w := r.width - indent
+		if w < 8 {
+			w = 8
+		}
 		buf.WriteString(strings.Repeat(" ", indent))
 		buf.WriteString(dim(strings.Repeat("─", w)))
 		buf.WriteString("\n\n")
@@ -253,7 +257,7 @@ func (r *mdRenderer) renderInlineBlock(buf *strings.Builder, n ast.Node, src []b
 	inline := r.collectInline(n, src)
 	prefix := strings.Repeat(" ", indent)
 	wrapped := wrapAnsi(inline, r.width-indent)
-	for line := range strings.SplitSeq(wrapped, "\n") {
+	for _, line := range strings.Split(wrapped, "\n") {
 		buf.WriteString(prefix)
 		buf.WriteString(line)
 		buf.WriteString("\n")
@@ -275,7 +279,7 @@ func (r *mdRenderer) renderList(buf *strings.Builder, n *ast.List, src []byte, i
 			marker = fmt.Sprintf("%d.", idx)
 			idx++
 		} else {
-			marker = "•"
+			marker = "-"
 		}
 		buf.WriteString(strings.Repeat(" ", indent))
 		buf.WriteString(accent(marker) + " ")
@@ -308,11 +312,36 @@ func (r *mdRenderer) renderList(buf *strings.Builder, n *ast.List, src []byte, i
 
 func (r *mdRenderer) renderFenced(buf *strings.Builder, n ast.Node, src []byte, indent int) {
 	prefix := strings.Repeat(" ", indent) + dim("│ ")
-	for i := range n.Lines().Len() {
+
+	var codeBuilder strings.Builder
+	for i := 0; i < n.Lines().Len(); i++ {
 		l := n.Lines().At(i)
-		line := strings.TrimRight(string(l.Value(src)), "\n")
+		codeBuilder.Write(l.Value(src))
+	}
+	code := codeBuilder.String()
+	if len(code) == 0 {
+		buf.WriteString("\n")
+		return
+	}
+
+	lang := ""
+	if fcb, ok := n.(*ast.FencedCodeBlock); ok {
+		lang = strings.TrimSpace(string(fcb.Language(src)))
+	}
+
+	highlighted := code
+	if colorOn() {
+		highlighted = highlightCodeByLang(lang, code)
+	}
+
+	lines := strings.Split(strings.TrimRight(highlighted, "\n"), "\n")
+	for _, line := range lines {
 		buf.WriteString(prefix)
-		buf.WriteString(accent(line))
+		if !colorOn() || lang == "" || highlighted == code {
+			buf.WriteString(accent(line))
+		} else {
+			buf.WriteString(line)
+		}
 		buf.WriteString("\n")
 	}
 	buf.WriteString("\n")
@@ -322,7 +351,7 @@ func (r *mdRenderer) renderBlockquote(buf *strings.Builder, n *ast.Blockquote, s
 	var inner strings.Builder
 	r.renderBlocks(&inner, n, src, 0)
 	prefix := strings.Repeat(" ", indent) + dim("▎ ")
-	for line := range strings.SplitSeq(strings.TrimRight(inner.String(), "\n"), "\n") {
+	for _, line := range strings.Split(strings.TrimRight(inner.String(), "\n"), "\n") {
 		buf.WriteString(prefix)
 		buf.WriteString(dim(line))
 		buf.WriteString("\n")
@@ -392,13 +421,13 @@ func (r *mdRenderer) appendInline(b *strings.Builder, n ast.Node, src []byte) {
 	}
 }
 
-// renderTable lays out a GFM table as terminal columns separated by dim
-// "│" rails with a "─┼─" rule under the header. Column widths auto-fit the
-// widest cell in each column and are capped to a fair share of the terminal
-// width so a wide table can't push the input off-screen. Long cells are
-// wrapped across multiple visual rows (the whole logical row inflates to
-// the tallest cell), not truncated, so no content is lost. Alignment is
-// left-only — Markdown's ":---:" hints are read but not honoured yet.
+// renderTable lays out a GFM table as terminal columns with a box-drawing
+// grid border. Column widths auto-fit the widest cell in each column and are
+// capped to a fair share of the terminal width so a wide table can't push the
+// input off-screen. Long cells are wrapped across multiple visual rows (the
+// whole logical row inflates to the tallest cell), not truncated, so no content
+// is lost. Alignment is left-only — Markdown's ":---:" hints are read but not
+// honoured yet.
 func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []byte, indent int) {
 	var header []string
 	var rows [][]string
@@ -425,7 +454,7 @@ func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []by
 		return
 	}
 
-	// Initial widths fit the widest cell content per column.
+	// Natural widths: widest cell content per column (CJK = 2 cols).
 	widths := make([]int, cols)
 	pick := func(i, w int) {
 		if i < cols && w > widths[i] {
@@ -441,77 +470,82 @@ func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []by
 		}
 	}
 
-	// Cap each column so the whole table fits the terminal: total = sum of
-	// widths + separators (3 chars each) + indent. Distribute the budget
-	// proportionally to the natural widths so columns with rich content
-	// keep more space than narrow ones.
-	available := max(r.width-indent-3*(cols-1), cols*3)
-	total := 0
-	for _, w := range widths {
-		total += w
+	// Width distribution: when streaming we use even distribution like
+	// opencode's columnWidthMode "full" — every column gets its intrinsic
+	// width and remaining space is split evenly, so a growing cell never
+	// steals width from neighbours. The final render (commitPending) uses
+	// water-fill for optimal column balance once all content is known.
+	// Grid overhead: left border(1) + cols×(content + 2 padding) +
+	// (cols−1) between-col separators + right border(1) = 3×cols + 1.
+	// Either way Σwidths must equal available exactly — a table even one
+	// column wider than r.width wraps the trailing rail onto its own line.
+	const minColWidth = 4 // room for 2 CJK chars or 4 ASCII chars
+	available := r.width - indent - 3*cols - 1
+	if available < cols*minColWidth {
+		available = cols * minColWidth
 	}
-	if total > available {
+
+	if r.streaming {
+		// Even distribution: each column gets at least minColWidth,
+		// remaining space is split evenly across all columns.
 		for i := range widths {
-			widths[i] = max(widths[i]*available/total, 3)
+			widths[i] = available / cols
 		}
+		for i := 0; i < available%cols; i++ {
+			widths[i]++
+		}
+	} else {
+		// Water-fill: narrow columns keep natural width, wide columns share
+		// the rest. Allocations are capped by the still-unspent budget so
+		// Σassigned never exceeds available, regardless of rounding.
+		fair := available / cols
+		if fair < minColWidth {
+			fair = minColWidth
+		}
+		assigned := make([]int, cols)
+		used := 0
+		for i, w := range widths {
+			if w <= fair {
+				assigned[i] = w
+			} else {
+				assigned[i] = fair
+			}
+			used += assigned[i]
+		}
+		remaining := available - used
+		for remaining > 0 {
+			hungry := 0
+			for i := range widths {
+				if widths[i] > assigned[i] {
+					hungry += widths[i] - assigned[i]
+				}
+			}
+			if hungry == 0 {
+				break
+			}
+			dist := 0
+			for i := range assigned {
+				if widths[i] > assigned[i] {
+					extra := (widths[i] - assigned[i]) * remaining / hungry
+					if extra == 0 {
+						extra = 1
+					}
+					if extra > remaining-dist {
+						extra = remaining - dist
+					}
+					assigned[i] += extra
+					dist += extra
+				}
+			}
+			if dist == 0 {
+				break
+			}
+			remaining -= dist
+		}
+		widths = assigned
 	}
 
-	prefix := strings.Repeat(" ", indent)
-	sep := dim(" │ ")
-
-	if len(header) > 0 {
-		r.renderTableRow(buf, prefix, sep, header, widths, true)
-		buf.WriteString(prefix)
-		for i := range widths {
-			if i > 0 {
-				buf.WriteString(dim("─┼─"))
-			}
-			buf.WriteString(dim(strings.Repeat("─", widths[i])))
-		}
-		buf.WriteByte('\n')
-	}
-	for _, row := range rows {
-		r.renderTableRow(buf, prefix, sep, row, widths, false)
-	}
-	buf.WriteByte('\n')
-}
-
-// renderTableRow lays out one logical row across multiple visual rows when
-// any cell wraps. wrapAnsi handles per-cell word + hard-break wrapping; the
-// row's visual height = max wrapped lines across all cells. Cells that ran
-// out of content get padded with spaces so the rail "│" stays aligned.
-func (r *mdRenderer) renderTableRow(buf *strings.Builder, prefix, sep string, cells []string, widths []int, isHeader bool) {
-	cols := len(widths)
-	wrapped := make([][]string, cols)
-	maxLines := 1
-	for i := range cols {
-		var text string
-		if i < len(cells) {
-			text = cells[i]
-		}
-		wrapped[i] = strings.Split(wrapAnsi(text, widths[i]), "\n")
-		if len(wrapped[i]) > maxLines {
-			maxLines = len(wrapped[i])
-		}
-	}
-	for line := range maxLines {
-		buf.WriteString(prefix)
-		for i := range cols {
-			if i > 0 {
-				buf.WriteString(sep)
-			}
-			var cell string
-			if line < len(wrapped[i]) {
-				cell = wrapped[i][line]
-			}
-			padded := padRight(cell, widths[i])
-			if isHeader {
-				padded = bold(padded)
-			}
-			buf.WriteString(padded)
-		}
-		buf.WriteByte('\n')
-	}
+	renderTableGrid(buf, header, rows, widths, indent, r.streaming)
 }
 
 // collectCells walks a TableHeader / TableRow node and pulls each TableCell's

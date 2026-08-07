@@ -17,18 +17,12 @@ func TestAssistantMarkdownHasIdentityAndIndentedBody(t *testing.T) {
 	activeColorProfile = colorprofile.NoTTY
 	configureCLITheme("dark")
 
-	rendered := renderAssistantMarkdown("A concise answer that wraps across the available width.", 32)
+	rendered := renderAssistantMarkdownStreaming("A concise answer that wraps across the available width.", 32, false)
 	lines := strings.Split(ansi.Strip(rendered), "\n")
-	if len(lines) < 4 {
-		t.Fatalf("assistant block should contain a header, gap, and wrapped body:\n%s", rendered)
+	if len(lines) < 2 {
+		t.Fatalf("assistant block should contain a wrapped body:\n%s", rendered)
 	}
-	if lines[0] != "  ◆ Reasonix" {
-		t.Fatalf("assistant header = %q, want %q", lines[0], "  ◆ Reasonix")
-	}
-	if lines[1] != "" {
-		t.Fatalf("assistant header/body separator = %q, want blank row", lines[1])
-	}
-	for i, line := range lines[2:] {
+	for i, line := range lines {
 		if line != "" && !strings.HasPrefix(line, assistantTranscriptIndent) {
 			t.Fatalf("assistant body row %d lacks the two-cell gutter: %q", i+2, line)
 		}
@@ -50,7 +44,7 @@ func TestReplaySectionsKeepAssistantIdentity(t *testing.T) {
 	if len(sections) != 2 {
 		t.Fatalf("replay sections = %d, want user and assistant", len(sections))
 	}
-	if plain := ansi.Strip(sections[1]); !strings.HasPrefix(plain, "  ◆ Reasonix\n\n  Version 1.2.3") {
+	if plain := ansi.Strip(sections[1]); !strings.HasPrefix(plain, "  Version 1.2.3") {
 		t.Fatalf("replayed assistant answer lost its identity: %q", plain)
 	}
 }
@@ -73,6 +67,71 @@ func TestReplaySectionsRestoreInterruptedLocalOutput(t *testing.T) {
 	for _, want := range []string{"change config", "checking config", "partial answer", "Write", "bounded recovery summary"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("replayed interrupted history missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+// TestReplayToolCardsSitFlush proves replayed tool cards from one message
+// render flush (no blank row between them) while keeping the trailing section
+// separator, matching the live transcript's card spacing.
+func TestReplayToolCardsSitFlush(t *testing.T) {
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.NoTTY
+	configureCLITheme("dark")
+
+	sections := replaySectionsFor([]provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "1", Name: "read_file", Arguments: `{"path":"a"}`},
+			{ID: "2", Name: "read_file", Arguments: `{"path":"b"}`},
+		}},
+	}, 64)
+	plain := ansi.Strip(strings.Join(sections, ""))
+	if !strings.Contains(plain, "  → Read a\n  → Read b") {
+		t.Fatalf("replayed cards should sit flush, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "  → Read a\n\n") {
+		t.Fatalf("replayed cards must not leave a blank row between them:\n%s", plain)
+	}
+	if !strings.HasSuffix(plain, "  → Read b\n\n") {
+		t.Fatalf("last replayed card keeps its section separator, got:\n%q", plain)
+	}
+}
+
+// TestReplaySkipsCompleteStepCards proves host-evidence bookkeeping
+// (complete_step) replays no card — a card per step would be scrollback noise
+// whose receipts only feed the model — matching the live transcript's
+// silence, while real tool cards still replay.
+func TestReplaySkipsCompleteStepCards(t *testing.T) {
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.NoTTY
+	configureCLITheme("dark")
+
+	sections := replaySectionsFor([]provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "1", Name: "read_file", Arguments: `{"path":"a"}`},
+			{ID: "2", Name: "complete_step", Arguments: `{"summary":"run go test"}`},
+		}},
+	}, 64)
+	plain := ansi.Strip(strings.Join(sections, ""))
+	if strings.Contains(plain, "Step") {
+		t.Fatalf("replay must not render a complete_step card:\n%s", plain)
+	}
+	if !strings.Contains(plain, "→ Read a") {
+		t.Fatalf("replay must keep the real tool cards:\n%s", plain)
+	}
+}
+
+// TestMoreLinesHintMatch proves the click-to-expand trigger matches only the
+// shell hint shape ("… N more lines"), never model prose that happens to
+// contain "more lines" — the whole rendered transcript participates in the
+// click hit-test.
+func TestMoreLinesHintMatch(t *testing.T) {
+	if !moreLinesHintRE.MatchString("    … 21 more lines") {
+		t.Fatal("hint shape should match")
+	}
+	for _, prose := range []string{"a few more lines to review", "more lines", "… more lines", "… 21 more lines of context"} {
+		if moreLinesHintRE.MatchString(prose) {
+			t.Fatalf("prose %q must not trigger the shell hint", prose)
 		}
 	}
 }
@@ -166,13 +225,13 @@ func TestSelectedTextRestoresMathWithoutReusingRawColumns(t *testing.T) {
 	}
 
 	plain := ansi.Strip(m.wrappedLines[lineIndex])
-	before, _, ok := strings.Cut(plain, "α")
-	before0, _, ok0 := strings.Cut(plain, "after")
-	if !ok || !ok0 {
+	formulaByte := strings.Index(plain, "α")
+	afterByte := strings.Index(plain, "after")
+	if formulaByte < 0 || afterByte < 0 {
 		t.Fatalf("math line = %q", plain)
 	}
-	formulaCol := ansi.StringWidth(before)
-	afterCol := ansi.StringWidth(before0)
+	formulaCol := ansi.StringWidth(plain[:formulaByte])
+	afterCol := ansi.StringWidth(plain[:afterByte])
 
 	m.sel = selection{
 		active: true,
@@ -218,12 +277,12 @@ func TestSelectedTextRestoresMathFromReplayBundle(t *testing.T) {
 	formulaCol := -1
 	for i, line := range m.wrappedLines {
 		plain := ansi.Strip(line)
-		before, _, ok := strings.Cut(plain, "α")
-		if !ok {
+		formulaByte := strings.Index(plain, "α")
+		if formulaByte < 0 {
 			continue
 		}
 		lineIndex = i
-		formulaCol = ansi.StringWidth(before)
+		formulaCol = ansi.StringWidth(plain[:formulaByte])
 		break
 	}
 	if lineIndex < 0 {
@@ -283,12 +342,12 @@ func TestSelectedTextPreservesProseAroundMath(t *testing.T) {
 
 	for i, line := range m.wrappedLines {
 		plain := ansi.Strip(line)
-		before, _, ok := strings.Cut(plain, "before")
+		startByte := strings.Index(plain, "before")
 		endByte := strings.Index(plain, " after")
-		if !ok || endByte < 0 {
+		if startByte < 0 || endByte < 0 {
 			continue
 		}
-		startCol := ansi.StringWidth(before)
+		startCol := ansi.StringWidth(plain[:startByte])
 		endCol := ansi.StringWidth(plain[:endByte+len(" after")])
 		m.sel = selection{
 			active: true,

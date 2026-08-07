@@ -76,39 +76,21 @@ func TestTurnReceiptIgnoresEmptyUsage(t *testing.T) {
 	}
 }
 
-func TestTurnReceiptMarksEstimatedUsage(t *testing.T) {
-	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
-	defer i18n.DetectLanguage("en")
-	activeColorProfile = colorprofile.NoTTY
-	configureCLITheme("dark")
-	i18n.DetectLanguage("en")
-
-	got := renderTurnReceipt(&provider.Usage{TotalTokens: 1_024, Estimated: true}, nil, nil)
-	for _, want := range []string{"≈1.0K tok", "estimated"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("estimated turn receipt %q missing %q", got, want)
-		}
-	}
-}
-
 func TestTurnReceiptBandUsesSingleQuietBoundary(t *testing.T) {
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	activeColorProfile = colorprofile.NoTTY
 	configureCLITheme("dark")
 
 	band := renderTurnReceiptBand("  TURN  14.0K tok · in 13.6K", 48)
-	lines := strings.Split(band, "\n")
-	if len(lines) != 2 {
-		t.Fatalf("turn receipt band rows = %d, want top rule and receipt:\n%s", len(lines), band)
+	if len(strings.Split(band, "\n")) != 1 {
+		t.Fatalf("turn receipt band should be one line, got %d:\n%s", len(strings.Split(band, "\n")), band)
 	}
-	if strings.Trim(lines[0], "─ ") != "" {
-		t.Fatalf("turn receipt band boundary is not a rule:\n%s", band)
+	if !strings.Contains(band, "TURN  14.0K tok") {
+		t.Fatalf("receipt body missing from band:\n%s", band)
 	}
-	if got := visibleWidth(lines[0]); got != 48 {
-		t.Fatalf("receipt rule width = %d, want 48: %q", got, lines[0])
-	}
-	if !strings.Contains(lines[1], "TURN  14.0K tok") {
-		t.Fatalf("receipt body missing from quiet band:\n%s", band)
+	plain := ansi.Strip(band)
+	if !strings.HasPrefix(plain, "  ──────") {
+		t.Fatalf("band should start with indent + 6 dashes: %q", plain)
 	}
 }
 
@@ -119,10 +101,10 @@ func TestTurnReceiptAdaptsContrastAcrossThemes(t *testing.T) {
 	i18n.DetectLanguage("en")
 
 	for _, tt := range []struct {
-		mode, borderSGR, labelSGR, valueSGR string
+		mode, labelSGR, valueSGR string
 	}{
-		{mode: "dark", borderSGR: "\033[38;5;237m", labelSGR: "\033[38;5;248m", valueSGR: "\033[38;5;251m"},
-		{mode: "light", borderSGR: "\033[38;5;252m", labelSGR: "\033[38;5;241m", valueSGR: "\033[38;5;239m"},
+		{mode: "dark", labelSGR: "\033[38;5;248m", valueSGR: "\033[38;5;251m"},
+		{mode: "light", labelSGR: "\033[38;5;241m", valueSGR: "\033[38;5;239m"},
 	} {
 		t.Run(tt.mode, func(t *testing.T) {
 			configureCLITheme(tt.mode)
@@ -130,21 +112,21 @@ func TestTurnReceiptAdaptsContrastAcrossThemes(t *testing.T) {
 				PromptTokens: 900, CompletionTokens: 100, TotalTokens: 1_000,
 			}, nil, nil)
 			band := renderTurnReceiptBand(receipt, 80)
-			for _, want := range []string{tt.borderSGR + "─", tt.labelSGR + "TURN", tt.valueSGR + "1.0K tok"} {
+			for _, want := range []string{tt.labelSGR + "─", tt.labelSGR + "TURN", tt.valueSGR + "1.0K tok"} {
 				if !strings.Contains(band, want) {
 					t.Fatalf("%s receipt %q missing semantic style %q", tt.mode, band, want)
 				}
 			}
-			if strings.Count(ansi.Strip(band), "\n") != 1 {
-				t.Fatalf("%s receipt should keep one rule and one body row: %q", tt.mode, ansi.Strip(band))
+			if strings.Count(ansi.Strip(band), "\n") != 0 {
+				t.Fatalf("%s receipt should be one line: %q", tt.mode, ansi.Strip(band))
 			}
 		})
 	}
 }
 
 func TestStatusFooterSemanticPaletteAcrossThemes(t *testing.T) {
-	t.Setenv("REASONIX_THEME", "")
-	t.Setenv("REASONIX_THEME_STYLE", "")
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 	activeColorProfile = colorprofile.ANSI256
 
@@ -160,23 +142,18 @@ func TestStatusFooterSemanticPaletteAcrossThemes(t *testing.T) {
 			m.label = "deepseek-v4-flash"
 			m.effortLevel = "auto"
 			m.runtimeProfile = "full"
-			got := m.statusModelWorkGroup(80)
+			got := m.statusCompactRight(80)
 			for _, want := range []string{
-				tt.labelSGR + "MODEL",
 				tt.infoSGR + "deepseek-v4-flash",
-				tt.labelSGR + "EFFORT",
-				tt.valueSGR + "auto",
-				tt.labelSGR + "WORK",
 				tt.secondarySGR + "balanced",
 			} {
 				if !strings.Contains(got, want) {
-					t.Fatalf("model/work group %q missing semantic style %q", got, want)
+					t.Fatalf("compact right group %q missing semantic style %q", got, want)
 				}
 			}
 			primary := m.primaryStatusLine(" Auto ", false, false)
-			if !strings.Contains(primary, tt.valueSGR+i18n.M.ChatStatusIdle) ||
-				!strings.Contains(primary, tt.labelSGR+i18n.M.ChatStatusCycleHintCompact) {
-				t.Fatalf("%s interaction hints should use readable semantic contrast: %q", tt.mode, primary)
+			if primary != ansi.Strip(primary) {
+				t.Fatalf("%s primary status line should be plain text: %q", tt.mode, primary)
 			}
 		})
 	}
@@ -215,7 +192,7 @@ func TestStatusFooterGitAndDividerAdaptToTheme(t *testing.T) {
 		mode, gitSGR, borderSGR string
 	}{
 		{mode: "dark", gitSGR: "\033[38;5;179m", borderSGR: "\033[38;5;237m"},
-		{mode: "light", gitSGR: "\033[38;5;136m", borderSGR: "\033[38;5;252m"},
+		{mode: "light", gitSGR: "\033[38;5;136m", borderSGR: "\033[38;5;254m"},
 	} {
 		t.Run(tt.mode, func(t *testing.T) {
 			configureCLITheme(tt.mode)
@@ -268,7 +245,7 @@ func TestStatusFooterNoColorKeepsSemanticLabels(t *testing.T) {
 	if strings.Contains(block, "\033[") {
 		t.Fatalf("NO_COLOR footer contains escapes: %q", block)
 	}
-	for _, want := range []string{"MODEL deepseek-v4-flash", "EFFORT auto", "WORK balanced", "BAL ¥12.34"} {
+	for _, want := range []string{"deepseek-v4-flash", "auto", "balanced"} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("NO_COLOR footer missing %q:\n%s", want, block)
 		}
@@ -278,11 +255,11 @@ func TestStatusFooterNoColorKeepsSemanticLabels(t *testing.T) {
 func TestStatusFooterUsesReadableLocalizedHintAndWrapsCleanly(t *testing.T) {
 	defer i18n.DetectLanguage("en")
 	for _, tt := range []struct {
-		lang, compact, session string
+		lang, session string
 	}{
-		{lang: "en", compact: "Shift+Tab ask/auto/plan · Ctrl+Y YOLO", session: "MODEL deepseek-v4-flash   EFFORT auto   WORK balanced"},
-		{lang: "zh", compact: "Shift+Tab 询问/自动/计划 · Ctrl+Y YOLO", session: "模型 deepseek-v4-flash   强度 auto   模式 均衡"},
-		{lang: "zh-TW", compact: "Shift+Tab 詢問/自動/計畫 · Ctrl+Y YOLO", session: "模型 deepseek-v4-flash   強度 auto   模式 均衡"},
+		{lang: "en", session: "deepseek-v4-flash · auto · balanced"},
+		{lang: "zh", session: "deepseek-v4-flash · auto · 均衡"},
+		{lang: "zh-TW", session: "deepseek-v4-flash · auto · 均衡"},
 	} {
 		t.Run(tt.lang, func(t *testing.T) {
 			i18n.DetectLanguage(tt.lang)
@@ -293,29 +270,13 @@ func TestStatusFooterUsesReadableLocalizedHintAndWrapsCleanly(t *testing.T) {
 			m.effortLevel = "auto"
 
 			primary := m.primaryStatusLine(" Auto ", false, false)
-			block := ansi.Strip(m.renderStatusBlock(primary, 100))
+			block := ansi.Strip(m.renderStatusBlock(primary, 80))
 			lines := strings.Split(block, "\n")
-			if len(lines) != 2 {
-				t.Fatalf("localized footer rows = %d, want wrapped primary/session rows without an empty data band:\n%s", len(lines), block)
+			if len(lines) != 1 {
+				t.Fatalf("localized footer rows = %d, want single line:\n%s", len(lines), block)
 			}
-			if !strings.Contains(lines[0], tt.compact) || !strings.Contains(lines[1], tt.session) {
-				t.Fatalf("localized footer did not keep readable shortcut and session groups:\n%s", block)
-			}
-			if strings.Contains(block, "⇧Tab") || strings.Contains(block, "^Y") {
-				t.Fatalf("localized footer fell back to symbolic shortcut notation:\n%s", block)
-			}
-			for row, line := range lines {
-				if width := visibleWidth(line); width > 100 {
-					t.Fatalf("localized footer row %d width = %d, want <= 100: %q", row, width, line)
-				}
-			}
-
-			narrow := ansi.Strip(m.renderStatusBlock(primary, 24))
-			if strings.Contains(narrow, "Shift+Tab") || strings.Contains(narrow, "Ctrl+Y") {
-				t.Fatalf("shortcut help should yield when readable key names cannot fit:\n%s", narrow)
-			}
-			if !strings.Contains(narrow, ansi.Strip(footerValue(i18n.M.ChatStatusIdle))) {
-				t.Fatalf("narrow footer should preserve the idle state:\n%s", narrow)
+			if !strings.Contains(lines[0], tt.session) {
+				t.Fatalf("localized footer missing session groups:\n%s", block)
 			}
 		})
 	}
@@ -330,13 +291,13 @@ func TestStatusFooterLocalizesMetricLabelsAndKeepsNarrowRows(t *testing.T) {
 	}{
 		{
 			lang:      "zh",
-			session:   "模型 deepseek-v4-flash   强度 auto   模式 均衡",
-			telemetry: []string{"缓存", "上下文", "压缩", "任务", "余额"},
+			session:   "deepseek-v4-flash · auto · 均衡",
+			telemetry: []string{"缓存", "上下文", "压缩", "任务"},
 		},
 		{
 			lang:      "zh-TW",
-			session:   "模型 deepseek-v4-flash   強度 auto   模式 均衡",
-			telemetry: []string{"快取", "上下文", "壓縮", "任務", "餘額"},
+			session:   "deepseek-v4-flash · auto · 均衡",
+			telemetry: []string{"快取", "上下文", "壓縮", "任務"},
 		},
 	} {
 		t.Run(tt.lang, func(t *testing.T) {
@@ -345,7 +306,7 @@ func TestStatusFooterLocalizesMetricLabelsAndKeepsNarrowRows(t *testing.T) {
 			m.label = "deepseek-v4-flash"
 			m.effortLevel = "auto"
 			m.runtimeProfile = "full"
-			if got := ansi.Strip(m.statusModelWorkGroup(80)); got != tt.session {
+			if got := ansi.Strip(m.statusCompactRight(80)); got != tt.session {
 				t.Fatalf("localized session metrics = %q, want %q", got, tt.session)
 			}
 
@@ -355,7 +316,6 @@ func TestStatusFooterLocalizesMetricLabelsAndKeepsNarrowRows(t *testing.T) {
 			groups = append(groups, renderContextStatusGroups(75, 100, .8)...)
 			groups = append(groups,
 				footerMetric(i18n.M.ChatStatusJobsLabel, footerInfo("2")),
-				footerMetric(i18n.M.ChatStatusBalanceLabel, footerValue("¥12.34")),
 			)
 			packed := ansi.Strip(packStatusGroups(groups, 22))
 			for _, label := range tt.telemetry {
@@ -391,28 +351,14 @@ func TestStatusFooterSwapsModelAndGitGroups(t *testing.T) {
 
 	primary := m.primaryStatusLine(" Auto ", false, false)
 	lines := strings.Split(ansi.Strip(m.renderStatusBlock(primary, 160)), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("wide status block lines = %d, want two data rows plus divider:\n%s", len(lines), strings.Join(lines, "\n"))
+	if len(lines) != 1 {
+		t.Fatalf("wide status block lines = %d, want single row:\n%s", len(lines), strings.Join(lines, "\n"))
 	}
-	if !strings.Contains(lines[0], "MODEL deepseek-v4-flash   EFFORT auto   WORK balanced") {
-		t.Fatalf("first row should keep model, effort, and work in one session group:\n%s", strings.Join(lines, "\n"))
+	if !strings.Contains(lines[0], "deepseek-v4-flash · auto · balanced") {
+		t.Fatalf("compact right should contain session info:\n%s", strings.Join(lines, "\n"))
 	}
-	if strings.Contains(lines[0], "DeepSeek-Reasonix@") {
-		t.Fatalf("first row should not contain Git identity:\n%s", strings.Join(lines, "\n"))
-	}
-	if strings.Trim(lines[1], "─ ") != "" {
-		t.Fatalf("middle row should be a divider:\n%s", strings.Join(lines, "\n"))
-	}
-	if !strings.Contains(lines[2], "DeepSeek-Reasonix@feature/responsive-footer") || strings.Contains(lines[2], "…") {
-		t.Fatalf("second row should preserve the full Git identity when it fits:\n%s", strings.Join(lines, "\n"))
-	}
-	if !strings.Contains(lines[2], "+1199 -244 ?3") || !strings.HasSuffix(lines[2], "BAL ¥12.34") {
-		t.Fatalf("second row should preserve Git changes and right-anchor telemetry:\n%s", strings.Join(lines, "\n"))
-	}
-	for i, line := range lines {
-		if got := visibleWidth(line); got > 160 {
-			t.Fatalf("row %d width = %d, want <= 160: %q", i, got, line)
-		}
+	if got := visibleWidth(lines[0]); got > 160 {
+		t.Fatalf("row width = %d, want <= 160: %q", got, lines[0])
 	}
 }
 
@@ -421,19 +367,22 @@ func TestStatusFooterWithoutGitLeftAlignsTelemetry(t *testing.T) {
 	i18n.DetectLanguage("en")
 
 	m := newTestChatTUI()
-	m.balance = "¥12.34"
-	line := ansi.Strip(m.layoutGitTelemetry(120))
-	if !strings.HasPrefix(line, statusFooterIndent+"BAL ¥12.34") {
-		t.Fatalf("non-Git telemetry should be left aligned, got %q", line)
+	m.ctrl = control.New(control.Options{})
+	m.label = "deepseek-v4-flash"
+	m.effortLevel = "max"
+
+	right := ansi.Strip(m.statusCompactRight(120))
+	if !strings.Contains(right, "deepseek-v4-flash") || !strings.Contains(right, "max") {
+		t.Fatalf("compact right should contain model and effort, got %q", right)
 	}
-	if visibleWidth(line) >= 120 {
-		t.Fatalf("non-Git telemetry unexpectedly retained right-alignment padding: %q", line)
+	if got := visibleWidth(right); got >= 120 {
+		t.Fatalf("compact right width = %d, want < 120: %q", got, right)
 	}
 }
 
 func TestStatusFooterOmitsEmptyDataBand(t *testing.T) {
 	m := newTestChatTUI()
-	primary := "  Auto · ready"
+	primary := "  Auto "
 	block := ansi.Strip(m.renderStatusBlock(primary, 120))
 	if block != primary {
 		t.Fatalf("empty Git/telemetry status block = %q, want only %q", block, primary)
@@ -453,17 +402,12 @@ func TestStatusFooterMediumLayoutLeftAlignsModelWork(t *testing.T) {
 	m.effortLevel = "auto"
 
 	primary := m.primaryStatusLine(" Auto ", false, false)
-	lines := strings.Split(ansi.Strip(m.renderStatusBlock(primary, 82)), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("medium footer rows = %d, want primary plus model/work without an empty data band:\n%s", len(lines), strings.Join(lines, "\n"))
+	lines := strings.Split(ansi.Strip(m.renderStatusBlock(primary, 45)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("medium footer rows = %d, want wrapping at narrow width:\n%s", len(lines), strings.Join(lines, "\n"))
 	}
-	modelRow := lines[1]
-	if !strings.HasPrefix(modelRow, statusFooterIndent+"MODEL deepseek-v4-flash") ||
-		!strings.Contains(modelRow, "EFFORT auto   WORK balanced") {
-		t.Fatalf("medium model/effort/work row should be left aligned, got %q:\n%s", modelRow, strings.Join(lines, "\n"))
-	}
-	if strings.Count(strings.TrimLeft(modelRow, " "), "MODEL") != 1 {
-		t.Fatalf("medium model/work row should remain a single semantic group: %q", modelRow)
+	if !strings.HasPrefix(lines[1], statusFooterIndent+"deepseek-v4-flash") {
+		t.Fatalf("model/work row should wrap to second line, got %q:\n%s", lines[1], strings.Join(lines, "\n"))
 	}
 }
 
@@ -471,20 +415,17 @@ func TestStatusFooterStacksGitAndTelemetryWithoutFloatingContinuation(t *testing
 	i18n.DetectLanguage("en")
 
 	m := newTestChatTUI()
+	m.ctrl = control.New(control.Options{})
 	m.gitStatus = gitStatus{
 		Repo: "DeepSeek-Reasonix", Branch: "feature/responsive-footer", Added: 20, Removed: 4,
 	}
-	m.balance = "¥123.45"
 
 	lines := strings.Split(ansi.Strip(m.layoutGitTelemetry(56)), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("stacked Git/telemetry rows = %d, want 2:\n%s", len(lines), strings.Join(lines, "\n"))
+	if len(lines) != 1 {
+		t.Fatalf("Git-only rows = %d, want 1:\n%s", len(lines), strings.Join(lines, "\n"))
 	}
 	if !strings.HasPrefix(lines[0], statusFooterIndent+"DeepSeek-Reasonix@") || !strings.Contains(lines[0], "+20 -4") {
-		t.Fatalf("Git should own the complete first row:\n%s", strings.Join(lines, "\n"))
-	}
-	if !strings.HasPrefix(lines[1], statusFooterIndent+"BAL ¥123.45") {
-		t.Fatalf("stacked telemetry should be left aligned, got %q", lines[1])
+		t.Fatalf("Git should own the complete row:\n%s", strings.Join(lines, "\n"))
 	}
 }
 
@@ -495,26 +436,19 @@ func TestStatusFooterNarrowLayoutBreaksBetweenGroups(t *testing.T) {
 	m.ctrl = control.New(control.Options{})
 	m.label = "provider/" + strings.Repeat("long-model-", 8)
 	m.runtimeProfile = "delivery"
-	m.balance = "¥123.45"
-	m.gitStatus = gitStatus{
-		Repo:    "DeepSeek-Reasonix-Workspace",
-		Branch:  "feature/" + strings.Repeat("long-branch-", 8),
-		Added:   20,
-		Removed: 4,
-	}
 
 	primary := m.primaryStatusLine(" Auto ", false, false)
-	block := ansi.Strip(m.renderStatusBlock(primary, 40))
+	block := ansi.Strip(m.renderStatusBlock(primary, 32))
 	lines := strings.Split(block, "\n")
-	if len(lines) <= 2 {
+	if len(lines) <= 1 {
 		t.Fatalf("narrow status block lines = %d, want semantic wrapping:\n%s", len(lines), block)
 	}
 	for i, line := range lines {
-		if got := visibleWidth(line); got > 40 {
-			t.Fatalf("row %d width = %d, want <= 40: %q", i, got, line)
+		if got := visibleWidth(line); got > 32 {
+			t.Fatalf("row %d width = %d, want <= 32: %q", i, got, line)
 		}
 	}
-	if !strings.Contains(block, "@") || !strings.Contains(block, "+20 -4") || !strings.Contains(block, "¥123.45") {
+	if !strings.Contains(block, "provider/") {
 		t.Fatalf("narrow layout dropped required information:\n%s", block)
 	}
 }
@@ -526,18 +460,13 @@ func TestStatusFooterCustomLineStillReplacesBuiltInData(t *testing.T) {
 	m.ctrl = control.New(control.Options{})
 	m.label = "deepseek-v4-flash"
 	m.runtimeProfile = "delivery"
-	m.balance = "¥12.34"
 	m.statuslineCmd = "custom-status"
 	m.statuslineOut = "custom telemetry"
-	m.gitStatus = gitStatus{Repo: "Reasonix", Branch: "main"}
 
 	primary := m.primaryStatusLine(" Auto ", false, false)
 	block := ansi.Strip(m.renderStatusBlock(primary, 120))
-	if strings.Contains(block, "deepseek-v4-flash") || strings.Contains(block, "work delivery") || strings.Contains(block, "¥12.34") {
+	if strings.Contains(block, "deepseek-v4-flash") || strings.Contains(block, "delivery") {
 		t.Fatalf("custom statusline should replace built-in data fields:\n%s", block)
-	}
-	if !strings.Contains(block, "Reasonix@main") || !strings.Contains(block, "custom telemetry") {
-		t.Fatalf("custom statusline should coexist with Git identity:\n%s", block)
 	}
 }
 

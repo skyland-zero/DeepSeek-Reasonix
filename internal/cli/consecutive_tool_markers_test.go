@@ -4,13 +4,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"reasonix/internal/event"
 )
 
 // 3 parallel Bash(ls) in one turn, ids "call_<n>" (no "shell-" prefix), each
-// streams 22 lines then finishes. Every card must keep its own "⎿ 22 lines"
-// marker. Regression: collapseShellSlot's late path recovered the count only
-// from shellOutputs ("shell-" ids), so call_N ids fell through to "-1 lines".
+// streams 22 lines then finishes. Every card must keep its own indented
+// first-line preview with a remaining-line count. Regression:
+// collapseShellSlot's late path recovered the count only from shellOutputs
+// ("shell-" ids), so call_N ids fell through to "-1 lines".
 func TestParallelBashMarkersKeepOwnLineCount(t *testing.T) {
 	m := newTestChatTUI()
 	ids := []string{"call_1", "call_2", "call_3"}
@@ -21,7 +24,7 @@ func TestParallelBashMarkersKeepOwnLineCount(t *testing.T) {
 		m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: id, Name: "bash", Args: `{"command":"ls"}`, Partial: false}})
 	}
 	for _, id := range ids {
-		for range 22 {
+		for i := 0; i < 22; i++ {
 			m.ingestEvent(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: id, Output: "line\n"}})
 		}
 	}
@@ -32,23 +35,23 @@ func TestParallelBashMarkersKeepOwnLineCount(t *testing.T) {
 	if joined := strings.Join(transcript, "\n"); strings.Contains(joined, "-1 lines") {
 		t.Fatalf("transcript must not contain a negative line count:\n%s", joined)
 	}
-	// Locate each card and assert the marker directly below it contains the
-	// correct line count. With 22 lines of output per call the summary is
-	// "⎿ 22 lines".
+	// Locate each card and assert the marker directly below it previews the
+	// first output line and counts the rest. With 22 lines of output per call
+	// the summary is "line" + "21 more lines".
 	cardIdx := map[string]int{}
 	for i, ln := range transcript {
-		if idx, ok := cardIdx["c1"]; !ok && strings.Contains(ln, "Bash(ls)") {
+		if idx, ok := cardIdx["c1"]; !ok && strings.Contains(ln, "$ Bash ls") {
 			_ = idx
 			if _, seen := cardIdx["c1"]; !seen {
 				cardIdx["c1"] = i
 				continue
 			}
 		}
-		if _, seen := cardIdx["c2"]; !seen && len(cardIdx) == 1 && strings.Contains(ln, "Bash(ls)") {
+		if _, seen := cardIdx["c2"]; !seen && len(cardIdx) == 1 && strings.Contains(ln, "$ Bash ls") {
 			cardIdx["c2"] = i
 			continue
 		}
-		if _, seen := cardIdx["c3"]; !seen && len(cardIdx) == 2 && strings.Contains(ln, "Bash(ls)") {
+		if _, seen := cardIdx["c3"]; !seen && len(cardIdx) == 2 && strings.Contains(ln, "$ Bash ls") {
 			cardIdx["c3"] = i
 		}
 	}
@@ -57,12 +60,12 @@ func TestParallelBashMarkersKeepOwnLineCount(t *testing.T) {
 	}
 	for name, idx := range cardIdx {
 		marker := transcript[idx+1]
-		if !strings.Contains(marker, "⎿") {
-			t.Fatalf("%s: marker slot at transcript[%d] should contain ⎿, got %q\nfull transcript:\n%s",
+		if !strings.HasPrefix(ansi.Strip(marker), outputIndent) {
+			t.Fatalf("%s: marker slot at transcript[%d] should be an indented output block, got %q\nfull transcript:\n%s",
 				name, idx+1, marker, strings.Join(transcript, "\n"))
 		}
-		if !strings.Contains(marker, "22 lines") {
-			t.Fatalf("%s: marker slot at transcript[%d] should report 22 lines, got %q\nfull transcript:\n%s",
+		if !strings.Contains(marker, "21 more lines") {
+			t.Fatalf("%s: marker slot at transcript[%d] should count 21 remaining lines, got %q\nfull transcript:\n%s",
 				name, idx+1, marker, strings.Join(transcript, "\n"))
 		}
 	}
@@ -70,7 +73,8 @@ func TestParallelBashMarkersKeepOwnLineCount(t *testing.T) {
 
 // No-streaming variant: a second Bash dispatches before the first emits any
 // ToolProgress, and the first's result lands last. The slot must still show
-// "⎿ N lines" driven by the ToolResult's own Output, not "-1 lines" or blank.
+// an indented first-line preview driven by the ToolResult's own Output, not
+// "-1 lines" or blank.
 func TestNonShellToolLateResultShowsCorrectCount(t *testing.T) {
 	m := newTestChatTUI()
 	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "call_a", Name: "bash", Args: `{"command":"echo a"}`}})
@@ -84,8 +88,8 @@ func TestNonShellToolLateResultShowsCorrectCount(t *testing.T) {
 		t.Fatalf("transcript must not contain a negative line count:\n%s", joined)
 	}
 	wantSubstrings := map[string]string{
-		"call_a": "3 lines", // a\nsecond\nthird\n → 3 lines
-		"call_b": "1 lines", // b\n → 1 line
+		"call_a": "2 more lines", // a\nsecond\nthird\n → first line "a" + 2 remaining
+		"call_b": "b",            // b\n → single line, just the preview
 	}
 	cardIdx := map[string]int{}
 	for i, ln := range transcript {
@@ -102,8 +106,8 @@ func TestNonShellToolLateResultShowsCorrectCount(t *testing.T) {
 			t.Fatalf("missing %s card in transcript:\n%s", id, joined)
 		}
 		marker := transcript[idx+1]
-		if !strings.Contains(marker, "⎿") {
-			t.Fatalf("%s: marker at transcript[%d] should contain ⎿, got %q", id, idx+1, marker)
+		if !strings.HasPrefix(ansi.Strip(marker), outputIndent) {
+			t.Fatalf("%s: marker at transcript[%d] should be an indented output block, got %q", id, idx+1, marker)
 		}
 		if !strings.Contains(marker, want) {
 			t.Fatalf("%s: marker at transcript[%d] should report %s, got %q", id, idx+1, want, marker)

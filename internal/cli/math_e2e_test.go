@@ -12,7 +12,7 @@ import (
 )
 
 // TestMathStreamingEndToEnd drives the real streaming path (ingestEvent →
-// streamAnswer/flushableMarkdownPrefix → renderer.Render → commitPending) with
+// streamAnswer/flushableContent → renderer.Render → commitPending) with
 // the math chunked mid-formula across event.Text boundaries, the way a model
 // actually streams tokens. It proves a half-written $...$ / $$...$$ is never
 // flushed as raw LaTeX and the committed transcript shows finished Unicode.

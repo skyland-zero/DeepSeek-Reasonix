@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	"github.com/charmbracelet/x/ansi"
 
+	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -38,21 +39,9 @@ func newTestChatTUI() chatTUI {
 		shellOutputs:         shellOut,
 		shellExpanded:        shellExp,
 		shellTranscriptIdx:   shellIdx,
+		toolCardIdx:          map[string]int{},
 		toolLineCountByID:    map[string]int{},
-		subagentProgressIdx:  map[string]int{},
-		subagentProgress:     map[string]*cliSubagentProgress{},
-		showTurnUsage:        true,
 	}
-}
-
-// subagentStatus / subagentPreview build reserved ToolProgress events the same
-// way the agent tracker emits them.
-func subagentStatus(id, phase string) event.Event {
-	return event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: id, Name: event.SubagentProgressStatusName, Output: phase}}
-}
-
-func subagentPreview(id, channel, text string, truncated bool) event.Event {
-	return event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: id, Name: channel, Output: text, Truncated: truncated}}
 }
 
 func TestCacheRateLabelKeepsTwoDecimals(t *testing.T) {
@@ -69,8 +58,8 @@ func TestCacheRateLabelKeepsTwoDecimals(t *testing.T) {
 
 // TestIngestSeparatesReasoningFromAnswer proves the thinking marker plus its live
 // text appear as reasoning streams, collapse to a "thought for Ns" summary (the
-// streamed text removed) when the answer begins, and the answer commits as its
-// own distinct entry.
+// streamed text removed) when the answer begins, and the answer streams live
+// under the separator, freezing as its own distinct entry at turn end.
 func TestIngestSeparatesReasoningFromAnswer(t *testing.T) {
 	m := newTestChatTUI()
 
@@ -83,11 +72,14 @@ func TestIngestSeparatesReasoningFromAnswer(t *testing.T) {
 	}
 
 	m.ingestEvent(event.Event{Kind: event.Text, Text: "Hello answer"}) // answer begins → block collapses
-	if len(m.transcript) != 2 || !strings.Contains(m.transcript[0], "thought for") {
+	if len(m.transcript) != 3 || !strings.Contains(m.transcript[0], "thought for") {
 		t.Fatalf("block should collapse to a duration summary plus answer separator, transcript=%v", m.transcript)
 	}
 	if strings.TrimSpace(m.transcript[1]) != "" {
 		t.Fatalf("reasoning/answer separator = %q, want one blank block", m.transcript[1])
+	}
+	if plain := ansi.Strip(m.transcript[2]); !strings.HasPrefix(plain, "  Hello answer") {
+		t.Fatalf("answer should stream live under the separator, got %q", plain)
 	}
 	if strings.Contains(strings.Join(m.transcript, "\n"), "…reasoning…") {
 		t.Fatalf("collapsed reasoning text should be removed, transcript=%v", m.transcript)
@@ -101,9 +93,9 @@ func TestIngestSeparatesReasoningFromAnswer(t *testing.T) {
 
 	m.commitPending() // turn end
 	if len(m.transcript) != 3 || !strings.Contains(m.transcript[2], "Hello") {
-		t.Fatalf("answer should commit as a separate entry, transcript=%v", m.transcript)
+		t.Fatalf("answer should stay as its own entry, transcript=%v", m.transcript)
 	}
-	if plain := ansi.Strip(m.transcript[2]); !strings.HasPrefix(plain, "  ◆ Reasonix\n\n  Hello answer") {
+	if plain := ansi.Strip(m.transcript[2]); !strings.HasPrefix(plain, "  Hello answer") {
 		t.Fatalf("answer should have an explicit assistant identity and indented body, got %q", plain)
 	}
 }
@@ -116,13 +108,14 @@ func TestAssistantAnswerWithoutReasoningHasNoLeadingSpacer(t *testing.T) {
 	if len(m.transcript) != 1 {
 		t.Fatalf("direct answer should remain one compact block, got %d: %v", len(m.transcript), m.transcript)
 	}
-	if plain := ansi.Strip(m.transcript[0]); !strings.HasPrefix(plain, "  ◆ Reasonix\n\n  Direct answer") {
+	if plain := ansi.Strip(m.transcript[0]); !strings.HasPrefix(plain, "  Direct answer") {
 		t.Fatalf("direct answer block = %q", plain)
 	}
 }
 
 func TestTurnReceiptLeavesOneBlankRowAfterAssistantAnswer(t *testing.T) {
 	m := newTestChatTUI()
+	m.cfg = &config.Config{UI: config.UIConfig{ShowTurnReceipt: true}}
 	m.ingestEvent(event.Event{Kind: event.Text, Text: "Answer"})
 	m.ingestEvent(event.Event{Kind: event.Message})
 	m.ingestEvent(event.Event{Kind: event.Usage, Usage: &provider.Usage{
@@ -140,23 +133,6 @@ func TestTurnReceiptLeavesOneBlankRowAfterAssistantAnswer(t *testing.T) {
 	}
 }
 
-func TestTurnReceiptCanBeHiddenWithoutDisablingUsageAccounting(t *testing.T) {
-	m := newTestChatTUI()
-	m.showTurnUsage = false
-	m.ingestEvent(event.Event{Kind: event.Text, Text: "Answer"})
-	m.ingestEvent(event.Event{Kind: event.Message})
-	m.ingestEvent(event.Event{Kind: event.Usage, Usage: &provider.Usage{
-		PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12,
-	}})
-
-	if len(m.transcript) != 1 {
-		t.Fatalf("hidden turn receipt should not add transcript blocks, got %d: %v", len(m.transcript), m.transcript)
-	}
-	if m.turnTokens != 2 {
-		t.Fatalf("hidden turn receipt should still account for completion tokens, got %d", m.turnTokens)
-	}
-}
-
 // TestVerboseReasoningInsertsTextUnderSummary proves /verbose mode keeps the full
 // thinking text, placed beneath the collapsed duration summary.
 func TestVerboseReasoningInsertsTextUnderSummary(t *testing.T) {
@@ -167,8 +143,8 @@ func TestVerboseReasoningInsertsTextUnderSummary(t *testing.T) {
 	m.ingestEvent(event.Event{Kind: event.Reasoning, Text: "step two"})
 	m.ingestEvent(event.Event{Kind: event.Text, Text: "Answer"}) // closes the block
 
-	if len(m.transcript) != 3 {
-		t.Fatalf("verbose block should be summary + text + answer separator, transcript=%v", m.transcript)
+	if len(m.transcript) != 4 {
+		t.Fatalf("verbose block should be summary + text + separator + live answer, transcript=%v", m.transcript)
 	}
 	if !strings.Contains(m.transcript[0], "thought for") {
 		t.Errorf("first line should be the duration summary, got %q", m.transcript[0])
@@ -178,6 +154,9 @@ func TestVerboseReasoningInsertsTextUnderSummary(t *testing.T) {
 	}
 	if strings.TrimSpace(m.transcript[2]) != "" {
 		t.Errorf("verbose reasoning/answer separator = %q, want blank block", m.transcript[2])
+	}
+	if plain := ansi.Strip(m.transcript[3]); !strings.HasPrefix(plain, "  Answer") {
+		t.Errorf("answer should stream live under the separator, got %q", plain)
 	}
 }
 
@@ -197,30 +176,31 @@ func TestIngestEventFlushesAnswer(t *testing.T) {
 	if strings.TrimSpace((*m.pendingCommit)[1]) != "" {
 		t.Errorf("second commit should be a blank spacer, got %q", (*m.pendingCommit)[1])
 	}
-	if !strings.Contains((*m.pendingCommit)[2], "Read(x)") {
-		t.Errorf("third commit should be the tool card, got %q", (*m.pendingCommit)[2])
+	if !strings.Contains((*m.pendingCommit)[2], "~ Read x") {
+		t.Errorf("third commit should be the pending tool line, got %q", (*m.pendingCommit)[2])
 	}
 	if m.pending.Len() != 0 {
 		t.Errorf("answer buffer should be drained after the event line")
 	}
 }
 
-// TestStreamAnswerFlushesCompletedParagraphs proves a multi-paragraph answer
-// appears chunk by chunk: a closed paragraph renders to scrollback while the
-// still-streaming one stays buffered, and turn end flushes the remainder.
-func TestStreamAnswerFlushesCompletedParagraphs(t *testing.T) {
+// TestStreamAnswerRendersFullBufferInPlace proves the whole pending buffer —
+// including the still-streaming tail — renders in place on every Text event
+// (character-level streaming, matching opencode), and turn end freezes the
+// final markdown block and resets the streaming state.
+func TestStreamAnswerRendersFullBufferInPlace(t *testing.T) {
 	m := newTestChatTUI()
 
 	m.ingestEvent(event.Event{Kind: event.Text, Text: "First paragraph.\n\nSecond para "})
 	if m.answerIdx < 0 {
-		t.Fatalf("a completed paragraph should open a streamed answer block")
+		t.Fatalf("the first Text event should open a streamed answer block")
 	}
 	joined := strings.Join(m.transcript, "\n")
 	if !strings.Contains(joined, "First paragraph.") {
 		t.Errorf("completed paragraph should be on screen, transcript=%v", m.transcript)
 	}
-	if strings.Contains(joined, "Second para") {
-		t.Errorf("the still-streaming paragraph must stay buffered, transcript=%v", m.transcript)
+	if !strings.Contains(joined, "Second para") {
+		t.Errorf("the still-streaming tail should also render in place, transcript=%v", m.transcript)
 	}
 
 	m.ingestEvent(event.Event{Kind: event.Text, Text: "is done now."})
@@ -234,28 +214,96 @@ func TestStreamAnswerFlushesCompletedParagraphs(t *testing.T) {
 	}
 }
 
-// TestFlushableMarkdownPrefixKeepsOpenFence proves a blank line inside an unclosed
-// fenced code block is not a flush boundary — the half-written block stays buffered
-// so it never renders mangled, while prose before the fence does flush.
-func TestFlushableMarkdownPrefixKeepsOpenFence(t *testing.T) {
-	open := "intro line\n\n```go\nfunc f() {\n\n\t// still typing"
-	if got := flushableMarkdownPrefix(open); got != "intro line" {
-		t.Errorf("open fence: flushable prefix = %q, want %q", got, "intro line")
+// TestFlushableContentKeepsTrailingLine proves that flushableContent returns
+// everything up to the last \n — every complete line is flushed row by row so
+// tables and code blocks render in-place. The trailing incomplete line stays
+// buffered for the next event.
+func TestFlushableContentKeepsTrailingLine(t *testing.T) {
+	if got := flushableContent("intro line\nsecond line"); got != "intro line" {
+		t.Errorf("incomplete trailing line: flushable prefix = %q, want %q", got, "intro line")
 	}
 
-	closed := "```go\ncode\n\nmore\n```\n\ntrailing"
-	if got := flushableMarkdownPrefix(closed); got != "```go\ncode\n\nmore\n```" {
-		t.Errorf("closed fence: flushable prefix = %q", got)
+	if got := flushableContent("```go\ncode\nmore\n"); got != "```go\ncode\nmore" {
+		t.Errorf("last char is \\n: flushable prefix = %q, want %q", got, "```go\ncode\nmore")
 	}
 
-	if got := flushableMarkdownPrefix("no boundary yet"); got != "" {
-		t.Errorf("no blank line should flush nothing, got %q", got)
+	if got := flushableContent("| a | b |\n|----|----|\n| v1 | v2 |\n"); got != "| a | b |\n|----|----|\n| v1 | v2 |" {
+		t.Errorf("table: flushable prefix = %q, want full table minus trailing \\n", got)
+	}
+
+	if got := flushableContent("no newline at all"); got != "" {
+		t.Errorf("no \\n should flush nothing, got %q", got)
+	}
+}
+
+// TestTrimUnclosedMathTail proves a half-written $...$ / $$...$$ span is
+// withheld from the streaming render (raw LaTeX never flashes) while prose and
+// closed formulas keep streaming. Code fences, escaped dollars, and currency
+// amounts must not be mistaken for unclosed math.
+func TestTrimUnclosedMathTail(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "no math passes through",
+			in:   "First paragraph.\n\nSecond para ",
+			want: "First paragraph.\n\nSecond para ",
+		},
+		{
+			name: "closed inline math passes through",
+			in:   `Euler's identity is $e^{i\pi} + 1 = 0$, a classic.`,
+			want: `Euler's identity is $e^{i\pi} + 1 = 0$, a classic.`,
+		},
+		{
+			name: "unclosed inline math withheld to the line start",
+			in:   `Euler's identity is $e^{i\`,
+			want: "",
+		},
+		{
+			name: "unclosed inline math on a later line keeps earlier lines",
+			in:   "Done so far.\n\nStill open $e^{i\\",
+			want: "Done so far.\n",
+		},
+		{
+			name: "display math open with content withheld",
+			in:   "Intro.\n$$\n\\sum_{n=1}^{\\infty} \\frac{1}{n^2}",
+			want: "Intro.",
+		},
+		{
+			name: "display math closed passes through",
+			in:   "$$\n\\sum_{n=1}^{\\infty} \\frac{1}{n^2}\n$$\n\nThat is all.",
+			want: "$$\n\\sum_{n=1}^{\\infty} \\frac{1}{n^2}\n$$\n\nThat is all.",
+		},
+		{
+			name: "math inside a code fence is ignored",
+			in:   "```\n$e^{i\\pi}$ stays raw in code\n```\n\nOpen $e^{i\\",
+			want: "```\n$e^{i\\pi}$ stays raw in code\n```\n",
+		},
+		{
+			name: "escaped dollar is not a delimiter",
+			in:   "Cost is \\$5 and \\$10, ok.",
+			want: "Cost is \\$5 and \\$10, ok.",
+		},
+		{
+			name: "currency amounts are not math",
+			in:   "Price $5, $10, and $20 total.",
+			want: "Price $5, $10, and $20 total.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := trimUnclosedMathTail(tt.in); got != tt.want {
+				t.Errorf("trimUnclosedMathTail(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 
 // TestToolProgressStreamsThenCollapses proves a running tool's output streams
-// live under its card via the ⎿ connector, then collapses to a line-count
-// summary when the result lands.
+// live under its card as an indented output block (no ⎿ connector), then
+// collapses to a line-count summary when the result lands.
 func TestToolProgressStreamsThenCollapses(t *testing.T) {
 	m := newTestChatTUI()
 	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "b1", Name: "bash", Args: `{"command":"go test ./..."}`}})
@@ -266,35 +314,38 @@ func TestToolProgressStreamsThenCollapses(t *testing.T) {
 	if !strings.Contains(joined, "ok pkg/a") || !strings.Contains(joined, "ok pkg/b") {
 		t.Fatalf("live output should be visible while running:\n%s", joined)
 	}
-	if !strings.Contains(joined, "⎿") {
-		t.Fatalf("live output should use the ⎿ connector:\n%s", joined)
+	if !strings.Contains(joined, "    ok pkg/a") || strings.Contains(joined, "⎿") {
+		t.Fatalf("live output should render as an indented block, not a ⎿ tree:\n%s", joined)
 	}
 
 	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "b1", Name: "bash", Output: "ok pkg/a\nok pkg/b\n"}})
 	joined = strings.Join(m.transcript, "\n")
-	if strings.Contains(joined, "ok pkg/a") {
-		t.Fatalf("output should collapse after completion:\n%s", joined)
+	// No accumulated output (non-"shell-" id), so the result's first line
+	// previews the run with a remaining-line count.
+	if !strings.Contains(joined, "    ok pkg/a") || !strings.Contains(joined, "1 more lines") {
+		t.Fatalf("collapsed block should preview the first output line and count the rest:\n%s", joined)
 	}
-	if !strings.Contains(joined, "2 lines") {
-		t.Fatalf("collapsed block should summarize the line count:\n%s", joined)
+	if strings.Contains(joined, "2 lines") || strings.Contains(joined, "Ctrl+B") {
+		t.Fatalf("collapsed block must not show a bare line count or a shortcut hint:\n%s", joined)
 	}
 }
 
-// TestToolWorkingLineThenClears proves a dispatched tool that streams no output
-// (e.g. symbol_context) shows a live "working · Ns" line so it doesn't look
-// frozen, and that the line clears on the result instead of collapsing to
-// "0 lines".
+// TestToolWorkingLineThenClears proves a dispatched bash that streams no output
+// shows a live "working · Ns" line so it doesn't look frozen, and that the
+// line clears on the result instead of collapsing to "0 lines". Bash is the
+// only tool that gets this block (it's the one streaming tool); non-streaming
+// tools are covered by TestNonStreamingToolCardStaysSingleLine.
 func TestToolWorkingLineThenClears(t *testing.T) {
 	m := newTestChatTUI()
-	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "c1", Name: "symbol_context", Args: `{"q":"x"}`}})
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "c1", Name: "bash", Args: `{"command":"go test ./..."}`}})
 
 	m.tickToolRunning() // one elapsed tick fills the placeholder
 	joined := strings.Join(m.transcript, "\n")
-	if !strings.Contains(joined, "⎿") || !strings.Contains(joined, "working") {
-		t.Fatalf("a running tool should show a 'working' progress line:\n%s", joined)
+	if strings.Contains(joined, "⎿") || !strings.Contains(joined, "working") {
+		t.Fatalf("a running tool should show an indented 'working' progress line:\n%s", joined)
 	}
 
-	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "c1", Name: "symbol_context"}})
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "c1", Name: "bash"}})
 	joined = strings.Join(m.transcript, "\n")
 	if strings.Contains(joined, "working") {
 		t.Fatalf("working line should clear after the result:\n%s", joined)
@@ -307,11 +358,52 @@ func TestToolWorkingLineThenClears(t *testing.T) {
 	}
 }
 
+// TestNonStreamingToolCardStaysSingleLine proves read-style tools render one
+// card line: a "~ Read x" pending row while running, then the dim
+// "→ Read x 123 lines" completed line with the result's line count folded
+// onto it: no separate indented "N lines" row after.
+func TestNonStreamingToolCardStaysSingleLine(t *testing.T) {
+	m := newTestChatTUI()
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "r1", Name: "read_file", Args: `{"path":"x"}`}})
+	m.tickToolRunning() // must be a no-op for non-streaming tools
+	joined := strings.Join(m.transcript, "\n")
+	if strings.Contains(joined, "⎿") || strings.Contains(joined, "working") {
+		t.Fatalf("a non-streaming tool must not open a working block:\n%s", joined)
+	}
+	if !strings.Contains(joined, "~ Read x") {
+		t.Fatalf("dispatch should render the pending line, got:\n%s", joined)
+	}
+	if len(m.transcript) != 1 {
+		t.Fatalf("transcript should hold exactly the pending line, got %d slots:\n%s", len(m.transcript), joined)
+	}
+
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "r1", Name: "read_file", Output: "a\nb\nc\n"}})
+	joined = strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "→ Read x") || !strings.Contains(joined, "3 lines") {
+		t.Fatalf("card should fold the line count onto itself, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "⎿") {
+		t.Fatalf("no separate connector row should remain:\n%s", joined)
+	}
+	if len(m.transcript) != 1 {
+		t.Fatalf("transcript should still hold one slot, got %d:\n%s", len(m.transcript), joined)
+	}
+
+	// A result with no output appends nothing to the card.
+	m2 := newTestChatTUI()
+	m2.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "r2", Name: "read_file", Args: `{"path":"y"}`}})
+	m2.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "r2", Name: "read_file"}})
+	joined = strings.Join(m2.transcript, "\n")
+	if strings.Contains(joined, "lines") {
+		t.Fatalf("a no-output result must not append a line count:\n%s", joined)
+	}
+}
+
 // TestConsecutiveToolCallsKeepMarkersUnderOwnCard is a regression test for
 // back-to-back Bash tool calls. Before the fix, the late ToolProgress for
 // the first tool (already superseded in the controller by a second
 // ToolDispatch) appended a fresh live block at the end of the transcript
-// under the *second* tool's card. Both "⎿" markers then stacked at the
+// under the *second* tool's card. Both indented markers then stacked at the
 // end, hiding which run produced which output. The fix threads the
 // transcript slot through shellTranscriptIdx so each tool's live block
 // stays directly under its own card regardless of the dispatch/progress
@@ -329,7 +421,7 @@ func TestConsecutiveToolCallsKeepMarkersUnderOwnCard(t *testing.T) {
 	// m.toolStreamID to "shell-2" and resets the live streaming state.
 	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "shell-2", Name: "bash", Args: `{"command":"git branch -a"}`}})
 	// The second bash also streams one chunk of output so its collapse
-	// produces a real ⎿ marker (not the zero-output blank fallback).
+	// produces a real indented marker (not the zero-output blank fallback).
 	m.ingestEvent(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "shell-2", Output: "* main-v2\n"}})
 	// Late progress for the FIRST bash — the path that previously stacked
 	// its marker under the second card.
@@ -357,7 +449,7 @@ func TestConsecutiveToolCallsKeepMarkersUnderOwnCard(t *testing.T) {
 		t.Fatalf("expected two bash cards in dispatch order, got idx1=%d idx2=%d\n%s", idx1, idx2, strings.Join(transcript, "\n"))
 	}
 
-	// Each card must be followed by its own ⎿-prefixed marker slot —
+	// Each card must be followed by its own indented marker slot —
 	// not just "some marker somewhere after the second card".
 	for _, pair := range []struct {
 		card string
@@ -367,8 +459,8 @@ func TestConsecutiveToolCallsKeepMarkersUnderOwnCard(t *testing.T) {
 		{card: "git branch -a", idx: idx2},
 	} {
 		next := transcript[pair.idx+1]
-		if !strings.Contains(next, "⎿") {
-			t.Fatalf("%q's marker should be at transcript[%d] with the ⎿ connector, got %q\nfull transcript:\n%s",
+		if !strings.HasPrefix(ansi.Strip(next), outputIndent) {
+			t.Fatalf("%q's marker should be at transcript[%d] as an indented output block, got %q\nfull transcript:\n%s",
 				pair.card, pair.idx+1, next, strings.Join(transcript, "\n"))
 		}
 	}
@@ -404,7 +496,10 @@ func TestRepeatedShellCommandDoesNotAccumulateOutput(t *testing.T) {
 	}
 }
 
-func TestCollapsedShellHintUsesKeyboardShortcutOnly(t *testing.T) {
+// TestCollapsedShellShowsPreviewWithoutShortcutHint proves the collapsed
+// shell preview keeps its remaining-line count but never advertises the
+// Ctrl+B toggle — the hint is display noise the user opted out of.
+func TestCollapsedShellShowsPreviewWithoutShortcutHint(t *testing.T) {
 	m := newTestChatTUI()
 	const id = "shell-long"
 	lines := make([]string, shellPreviewLines+2)
@@ -418,11 +513,14 @@ func TestCollapsedShellHintUsesKeyboardShortcutOnly(t *testing.T) {
 	m.collapseShellSlot(id, 0, output)
 
 	got := m.transcript[0]
-	if !strings.Contains(got, "more lines (Ctrl+B)") {
-		t.Fatalf("collapsed shell hint should mention Ctrl+B, got %q", got)
+	if !strings.Contains(got, "more lines") {
+		t.Fatalf("collapsed shell preview should keep the remaining-line count, got %q", got)
+	}
+	if strings.Contains(got, "Ctrl+B") {
+		t.Fatalf("collapsed shell preview must not advertise Ctrl+B, got %q", got)
 	}
 	if strings.Contains(got, "click/") {
-		t.Fatalf("collapsed shell hint must not advertise mouse click in default TUI mode, got %q", got)
+		t.Fatalf("collapsed shell preview must not advertise mouse click in default TUI mode, got %q", got)
 	}
 }
 
@@ -488,7 +586,7 @@ func TestTodoPanelKeepsLastSuccessfulTodoWrite(t *testing.T) {
 func TestToolProgressTailCap(t *testing.T) {
 	m := newTestChatTUI()
 	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "b1", Name: "bash", Args: `{"command":"x"}`}})
-	for i := range toolStreamTailLines + 5 {
+	for i := 0; i < toolStreamTailLines+5; i++ {
 		m.ingestEvent(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "b1", Output: "line" + string(rune('A'+i)) + "\n"}})
 	}
 	block := m.transcript[m.toolStreamIdx]
@@ -504,7 +602,7 @@ func TestToolProgressTailCap(t *testing.T) {
 // long stream — the fix for the O(n²)/multi-GB re-render of the full thought.
 func TestReasoningViewBounded(t *testing.T) {
 	m := newTestChatTUI()
-	for range 5000 {
+	for i := 0; i < 5000; i++ {
 		m.ingestEvent(event.Event{Kind: event.Reasoning, Text: "some thinking text token "})
 	}
 	if len(m.reasoningView) > reasoningViewMax {
@@ -515,171 +613,64 @@ func TestReasoningViewBounded(t *testing.T) {
 	}
 }
 
-// TestSubagentProgressBlockShowsPhaseElapsedActivity proves the default block
-// shows phase, elapsed, and recent activity — never the reasoning body.
-func TestSubagentProgressBlockShowsPhaseElapsedActivity(t *testing.T) {
+// TestConsecutiveToolCardsSitFlush proves back-to-back tool dispatches render
+// their single-line cards with no blank spacer row between them ("→ Read a"
+// directly followed by "→ Read b"), while the spacer still separates the
+// first card from preceding content such as an assistant answer.
+func TestConsecutiveToolCardsSitFlush(t *testing.T) {
 	m := newTestChatTUI()
-	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "task-1", Name: "task", Args: `{"prompt":"work"}`}})
-	m.ingestEvent(subagentStatus("task-1", "running"))
-	m.ingestEvent(subagentPreview("task-1", event.SubagentProgressReasoningName, "secret thinking", false))
-	m.ingestEvent(subagentStatus("task-1", "reasoning"))
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "r1", Name: "read_file", Args: `{"path":"a"}`}})
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "r1", Name: "read_file", Output: "a\n"}})
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "r2", Name: "read_file", Args: `{"path":"b"}`}})
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "r2", Name: "read_file", Output: "b\n"}})
 
-	joined := strings.Join(m.transcript, "\n")
-	if !strings.Contains(joined, "running") && !strings.Contains(joined, "reasoning") {
-		t.Fatalf("progress block should show the phase:\n%s", joined)
+	if len(m.transcript) != 2 {
+		t.Fatalf("two flush cards should be exactly two blocks, got %d: %v", len(m.transcript), m.transcript)
 	}
-	if strings.Contains(joined, "secret thinking") {
-		t.Fatalf("default block must not print the reasoning body:\n%s", joined)
+	if got := ansi.Strip(m.transcript[0]); !strings.Contains(got, "→ Read a") {
+		t.Fatalf("first block should be the completed first card, got %q", got)
 	}
-	if !strings.Contains(joined, "ago") {
-		t.Fatalf("progress block should show recent activity:\n%s", joined)
-	}
-}
-
-// TestSubagentProgressVerboseShowsBoundedTails proves verbose mode renders the
-// reasoning/text tails and marks truncation.
-func TestSubagentProgressVerboseShowsBoundedTails(t *testing.T) {
-	m := newTestChatTUI()
-	m.showReasoning = true
-	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "task-1", Name: "task", Args: `{"prompt":"work"}`}})
-	m.ingestEvent(subagentStatus("task-1", "running"))
-	m.ingestEvent(subagentPreview("task-1", event.SubagentProgressReasoningName, "chain of thought", false))
-	m.ingestEvent(subagentPreview("task-1", event.SubagentProgressTextName, "draft answer", false))
-	m.ingestEvent(subagentPreview("task-1", event.SubagentProgressNoticeName, "heads up", true))
-
-	joined := strings.Join(m.transcript, "\n")
-	for _, want := range []string{"chain of thought", "draft answer", "heads up", "truncated"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("verbose block should show %q:\n%s", want, joined)
-		}
+	if got := ansi.Strip(m.transcript[1]); !strings.Contains(got, "→ Read b") {
+		t.Fatalf("second block should be the completed second card, got %q", got)
 	}
 
-	// Tails are bounded: a huge reasoning body keeps only the recent tail.
-	m.ingestEvent(subagentPreview("task-1", event.SubagentProgressReasoningName, strings.Repeat("x", subagentPreviewMax*2)+"END", false))
-	joined = strings.Join(m.transcript, "\n")
-	if !strings.Contains(joined, "END") || strings.Contains(joined, strings.Repeat("x", subagentPreviewMax)) {
-		t.Fatalf("verbose reasoning should keep a bounded tail:\n%s", joined)
-	}
-}
-
-// TestSubagentProgressTerminalCollapsesToOneLine proves terminal children fold
-// to a one-line summary (no recent-activity suffix), while the preview stays
-// available in verbose mode.
-func TestSubagentProgressTerminalCollapsesToOneLine(t *testing.T) {
-	m := newTestChatTUI()
-	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "task-1", Name: "task", Args: `{"prompt":"work"}`}})
-	m.ingestEvent(subagentStatus("task-1", "running"))
-	m.ingestEvent(subagentPreview("task-1", event.SubagentProgressTextName, "answer body", false))
-	m.ingestEvent(subagentStatus("task-1", "completed"))
-
-	joined := strings.Join(m.transcript, "\n")
-	if strings.Contains(joined, "answer body") {
-		t.Fatalf("terminal block must collapse the preview away:\n%s", joined)
-	}
-	if !strings.Contains(joined, "completed") || strings.Contains(joined, "ago") {
-		t.Fatalf("terminal block should be a one-line summary:\n%s", joined)
-	}
-
-	// Verbose keeps the preview after terminal.
+	// A preceding assistant answer still gets its blank spacer before the
+	// first card — only the card-to-card gap is removed.
 	m2 := newTestChatTUI()
-	m2.showReasoning = true
-	m2.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "task-1", Name: "task", Args: `{"prompt":"work"}`}})
-	m2.ingestEvent(subagentPreview("task-1", event.SubagentProgressTextName, "answer body", false))
-	m2.ingestEvent(subagentStatus("task-1", "failed"))
-	joined = strings.Join(m2.transcript, "\n")
-	if !strings.Contains(joined, "answer body") || !strings.Contains(joined, "failed") {
-		t.Fatalf("verbose terminal block should keep the preview:\n%s", joined)
+	m2.ingestEvent(event.Event{Kind: event.Text, Text: "Answer"})
+	m2.ingestEvent(event.Event{Kind: event.Message})
+	m2.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "r3", Name: "read_file", Args: `{"path":"c"}`}})
+	m2.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "r3", Name: "read_file", Output: "c\n"}})
+	if len(m2.transcript) != 3 {
+		t.Fatalf("answer + spacer + card should be three blocks, got %d: %v", len(m2.transcript), m2.transcript)
+	}
+	if strings.TrimSpace(m2.transcript[1]) != "" {
+		t.Fatalf("answer/card separator = %q, want one blank block", m2.transcript[1])
+	}
+	if got := ansi.Strip(m2.transcript[2]); !strings.Contains(got, "→ Read c") {
+		t.Fatalf("card after the spacer should be the completed line, got %q", got)
 	}
 }
 
-// TestSubagentProgressChildrenDoNotCrossStream proves concurrent children keep
-// their own fixed slots: each child's content stays under its own ID, and a
-// late event for one child never appends to another child's block.
-func TestSubagentProgressChildrenDoNotCrossStream(t *testing.T) {
+// TestReflowKeepsCompletedCardForm proves a terminal resize re-renders a
+// completed tool card from its semantic source without reverting it to the
+// running "~ pending" form — the state lives on transcriptSource, not in the
+// rendered text.
+func TestReflowKeepsCompletedCardForm(t *testing.T) {
 	m := newTestChatTUI()
-	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "p-1", Name: "parallel_tasks", Args: `{}`}})
-	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "p-1/sub-1", Name: "task", Args: `{}`, ParentID: "p-1"}})
-	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "p-1/sub-2", Name: "task", Args: `{}`, ParentID: "p-1"}})
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "r1", Name: "read_file", Args: `{"path":"x"}`}})
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "r1", Name: "read_file", Output: "a\nb\n"}})
+	if got := ansi.Strip(m.transcript[0]); !strings.Contains(got, "→ Read x") {
+		t.Fatalf("card should be completed before reflow, got %q", got)
+	}
 
-	m.ingestEvent(subagentStatus("p-1/sub-1", "running"))
-	m.ingestEvent(subagentStatus("p-1/sub-2", "running"))
-	m.ingestEvent(subagentPreview("p-1/sub-1", event.SubagentProgressReasoningName, "AAAA", false))
-	m.ingestEvent(subagentPreview("p-1/sub-2", event.SubagentProgressReasoningName, "BBBB", false))
-	m.ingestEvent(subagentStatus("p-1/sub-1", "completed"))
-	// A late event for child 2 must land in child 2's own slot.
-	m.ingestEvent(subagentPreview("p-1/sub-2", event.SubagentProgressTextName, "child two text", false))
-	m.ingestEvent(subagentStatus("p-1/sub-2", "completed"))
-
-	idx1, ok1 := m.subagentProgressIdx["p-1/sub-1"]
-	idx2, ok2 := m.subagentProgressIdx["p-1/sub-2"]
-	if !ok1 || !ok2 || idx1 == idx2 {
-		t.Fatalf("children should own distinct fixed slots: %d %d", idx1, idx2)
+	m.width = 60
+	m.reflowTranscript(m.width)
+	if got := ansi.Strip(m.transcript[0]); !strings.Contains(got, "→ Read x") || !strings.Contains(got, "2 lines") {
+		t.Fatalf("reflow must keep the completed card and its line count, got %q", got)
 	}
-	if strings.Contains(m.transcript[idx1], "BBBB") || strings.Contains(m.transcript[idx2], "AAAA") {
-		t.Fatalf("children cross-streamed:\nidx1=%s\nidx2=%s", m.transcript[idx1], m.transcript[idx2])
-	}
-	if strings.Contains(m.transcript[idx1], "child two text") {
-		t.Fatalf("late child-2 content must never land in child-1's block:\n%s", m.transcript[idx1])
-	}
-	// The late preview is attributed to the right child in memory (the default
-	// collapsed view hides bodies after terminal, verbose shows them again).
-	if got := m.subagentProgress["p-1/sub-2"]; got == nil || got.text != "child two text" {
-		t.Fatalf("late child-2 text = %+v, want it stored on child 2", got)
-	}
-	if strings.Contains(m.transcript[idx2], "BBBB") || !strings.Contains(m.transcript[idx2], "completed") {
-		t.Fatalf("child-2 terminal block = %q, want its own completed summary", m.transcript[idx2])
-	}
-}
-
-// TestSubagentProgressOrdinaryToolProgressUnaffected proves non-reserved
-// ToolProgress still streams through the single live tool stream.
-func TestSubagentProgressOrdinaryToolProgressUnaffected(t *testing.T) {
-	m := newTestChatTUI()
-	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "b1", Name: "bash", Args: `{"command":"ls"}`}})
-	m.ingestEvent(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "b1", Output: "file.txt\n"}})
-	if joined := strings.Join(m.transcript, "\n"); !strings.Contains(joined, "file.txt") {
-		t.Fatalf("ordinary tool progress must still stream:\n%s", joined)
-	}
-	if len(m.subagentProgress) != 0 {
-		t.Fatalf("ordinary progress must not create sub-agent state")
-	}
-}
-
-// TestSubagentProgressUnknownReservedChannelIgnored locks forward compatibility:
-// an older CLI must suppress a future reasonix.subagent.* channel instead of
-// treating its body as ordinary tool output.
-func TestSubagentProgressUnknownReservedChannelIgnored(t *testing.T) {
-	m := newTestChatTUI()
-	m.ingestEvent(subagentPreview("task-1", event.SubagentProgressPrefix+"future", "must stay hidden", false))
-
-	if got := strings.Join(m.transcript, "\n"); got != "" {
-		t.Fatalf("unknown reserved progress entered the transcript: %q", got)
-	}
-	if m.toolStreamID != "" || m.toolLineCount != 0 || m.toolPartial != "" {
-		t.Fatalf("unknown reserved progress opened ordinary tool output: id=%q lines=%d partial=%q", m.toolStreamID, m.toolLineCount, m.toolPartial)
-	}
-	if len(m.subagentProgress) != 0 {
-		t.Fatalf("unknown reserved progress allocated known-channel state: %+v", m.subagentProgress)
-	}
-}
-
-// TestSubagentProgressNativeScrollbackPrintsOnPhaseChange proves Termux-style
-// native scrollback (which cannot rewrite printed output) queues a status line
-// on phase changes and terminal only — same-phase repeats stay quiet.
-func TestSubagentProgressNativeScrollbackPrintsOnPhaseChange(t *testing.T) {
-	m := newTestChatTUI()
-	m.nativeScrollback = true
-	m.ingestEvent(subagentStatus("task-1", "running"))
-	m.ingestEvent(subagentStatus("task-1", "running")) // repeat phase: no print
-	m.ingestEvent(subagentStatus("task-1", "reasoning"))
-	m.ingestEvent(subagentStatus("task-1", "completed"))
-	got := strings.Join(*m.pendingCommit, "\n")
-	for _, want := range []string{"running", "reasoning", "completed"} {
-		if strings.Count(got, want) != 1 {
-			t.Fatalf("scrollback output should print each phase exactly once, got %q (count %q = %d)", got, want, strings.Count(got, want))
-		}
-	}
-	if len(m.subagentProgressIdx) != 0 {
-		t.Fatalf("scrollback mode must not allocate fixed transcript slots")
+	got := ansi.Strip(m.transcript[0])
+	if strings.Contains(got, "~ Read x") {
+		t.Fatalf("reflow must not revert a completed card to the pending form, got %q", got)
 	}
 }

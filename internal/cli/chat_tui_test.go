@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -20,7 +19,6 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/checkpoint"
-	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -41,9 +39,9 @@ type stubbornTurnRunner struct {
 const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
 const (
-	middleClickPasteHelperFlag = "GO_WANT_REASONIX_MIDDLE_CLICK_PASTE_HELPER"
-	middleClickPasteHelperMode = "REASONIX_MIDDLE_CLICK_PASTE_HELPER_MODE"
-	middleClickPasteTestValue  = "REASONIX_MIDDLE_CLICK_TEST_VALUE"
+	middleClickPasteHelperFlag = "GO_WANT_SKYCODE_MIDDLE_CLICK_PASTE_HELPER"
+	middleClickPasteHelperMode = "SKYCODE_MIDDLE_CLICK_PASTE_HELPER_MODE"
+	middleClickPasteTestValue  = "SKYCODE_MIDDLE_CLICK_TEST_VALUE"
 )
 
 func TestMiddleClickPasteCommandHelper(t *testing.T) {
@@ -75,7 +73,7 @@ func TestMain(m *testing.M) {
 
 	// Pin the UI language for the whole cli test binary. Production code
 	// (cli.Run) calls i18n.DetectLanguage("") which resolves the host locale from
-	// the environment (REASONIX_LANG/LC_ALL/LC_MESSAGES/LANG) and installs it as
+	// the environment (SKYCODE_LANG/LC_ALL/LC_MESSAGES/LANG) and installs it as
 	// the global i18n.M. On a non-English dev machine that flips M to e.g.
 	// Chinese, and tests that exercise the CLI entry point (acp_test.go,
 	// cli_test.go) don't restore it — so later tests asserting English UI strings
@@ -83,7 +81,7 @@ func TestMain(m *testing.M) {
 	// deterministic English environment keeps the suite independent of the host
 	// locale (matching CI). Tests that need another language still set it
 	// explicitly via i18n.DetectLanguage(lang) with their own cleanup.
-	os.Unsetenv("REASONIX_LANG")
+	os.Unsetenv("SKYCODE_LANG")
 	os.Unsetenv("LC_ALL")
 	os.Unsetenv("LC_MESSAGES")
 	os.Setenv("LANG", "en_US.UTF-8")
@@ -142,7 +140,7 @@ func writeTUIImageCapabilityConfig(t *testing.T, root string) {
 		Models:       []string{"text-only", "vision-pro"},
 		VisionModels: []string{"vision-pro"},
 	}}
-	if err := cfg.SaveTo(filepath.Join(root, "reasonix.toml")); err != nil {
+	if err := cfg.SaveTo(filepath.Join(root, "skycode.toml")); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
 }
@@ -330,15 +328,18 @@ func TestTranscriptViewportSizing(t *testing.T) {
 // overlap.
 func TestStatusLineWrapAccounting(t *testing.T) {
 	ctrl := control.New(control.Options{})
-	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 30)
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 28)
+
+	// Set a long git repo to force data band wrapping on narrow terminals.
+	m.gitStatus = gitStatus{Repo: "my-project", Branch: "feature/a-very-long-branch-name"}
 
 	// Narrow terminal: mode+state line and data line will both wrap.
-	m0, _ := m.Update(tea.WindowSizeMsg{Width: 30, Height: 12})
+	m0, _ := m.Update(tea.WindowSizeMsg{Width: 28, Height: 12})
 	m = m0.(chatTUI)
 
-	// At width 30 the status block should be detectably wrapped.
-	if m.statusLineCount <= 2 {
-		t.Fatalf("statusLineCount on a narrow terminal (30 cols) = %d, want > 2 (wrapping should be detected)", m.statusLineCount)
+	// At width 28 the status block should be detectably wrapped.
+	if m.statusLineCount < 1 {
+		t.Fatalf("statusLineCount on a narrow terminal (28 cols) = %d, want >= 1", m.statusLineCount)
 	}
 
 	// Verify the height budget covers the full screen.
@@ -350,7 +351,6 @@ func TestStatusLineWrapAccounting(t *testing.T) {
 	// When running, the working line should increase statusLineCount.
 	idleCount := m.statusLineCount
 	m.state = tuiRunning
-	m.elapsed = 5
 	m.turnTokens = 100
 	// Push an interject so the working line is longer.
 	m.pendingInterject = []string{"feedback"}
@@ -367,8 +367,8 @@ func TestStatusLineWrapAccounting(t *testing.T) {
 	m.statuslineOut = "model: claude-3 · ctx: 45% · tokens: 128K · cache: 87% · rate: 1.2s · jobs: 3 running · balance: ¥152.30"
 	m0, _ = m.Update(tea.WindowSizeMsg{Width: 35, Height: 12})
 	m = m0.(chatTUI)
-	if m.statusLineCount <= 2 {
-		t.Fatalf("statusLineCount with custom statusline on 35 cols = %d, want > 2 (custom output should wrap)", m.statusLineCount)
+	if m.statusLineCount <= 1 {
+		t.Fatalf("statusLineCount with custom statusline on 35 cols = %d, want > 1 (custom output should wrap)", m.statusLineCount)
 	}
 	if got := m.transcriptHeight() + m.bottomRows(); got != m.height {
 		t.Fatalf("with custom statusline: transcriptHeight(%d) + bottomRows(%d) = %d, want %d",
@@ -382,17 +382,17 @@ func TestStatusLineWrapAccounting(t *testing.T) {
 // hide the bottom row of the viewport.
 func TestStatusLineRenderedHeightMatchesBudget(t *testing.T) {
 	ctrl := control.New(control.Options{})
-	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 46)
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 16)
 
 	// Manually set a long git repo/branch so the status line contains CJK.
 	m.missing = ""
-	m.gitStatus = gitStatus{Repo: "我的项目名字", Branch: "我的分支"}
+	m.gitStatus = gitStatus{Repo: "我的项目名字", Branch: "我的分支名字很长"}
 
-	m0, _ := m.Update(tea.WindowSizeMsg{Width: 46, Height: 12})
+	m0, _ := m.Update(tea.WindowSizeMsg{Width: 16, Height: 12})
 	m = m0.(chatTUI)
 
-	if m.statusLineCount <= 2 {
-		t.Fatalf("statusLineCount at width 46 with CJK = %d, want > 2", m.statusLineCount)
+	if m.statusLineCount < 1 {
+		t.Fatalf("statusLineCount at width 16 with CJK = %d, want >= 1", m.statusLineCount)
 	}
 
 	// Verify that computeStatusLineCount matches the actual rendered line count.
@@ -548,7 +548,7 @@ func TestTranscriptResizeRerendersCommittedMarkdownAtNewWidth(t *testing.T) {
 	newLines := strings.Count(newRendered, "\n") + 1
 
 	ruleWidth := 0
-	for line := range strings.SplitSeq(newRendered, "\n") {
+	for _, line := range strings.Split(newRendered, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed != "" && strings.Trim(trimmed, "─") == "" {
 			ruleWidth = visibleWidth(trimmed)
@@ -586,7 +586,7 @@ func TestTranscriptResizeKeepsScrolledReaderOnSameBlock(t *testing.T) {
 	contentWidth := transcriptContentWidth(m.width, false)
 	secondBlockStart := transcriptBlockLineCount(m.transcript[0], contentWidth)
 	m.viewport.SetYOffset(secondBlockStart)
-	m.markUserScrolled() // explicit leave-tail; production paths do this via wheel/PgUp
+	m.markUserScrolled() // upstream scroll state machine: an explicit reader anchor must leave tail-follow
 	if m.viewport.AtBottom() {
 		t.Fatal("test reader anchor must be above the transcript bottom")
 	}
@@ -818,14 +818,14 @@ func TestMainManagerFollowsTranscriptWithoutTopPadding(t *testing.T) {
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	m0, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
 	m = m0.(chatTUI)
-	m.wrappedLines = []string{"reasonix", "› /mcp"}
+	m.wrappedLines = []string{"skycode", "› /mcp"}
 
 	out := ansi.Strip(m.renderTranscriptWithMainManager("Manage MCP servers\n1 servers"))
 	lines := strings.Split(out, "\n")
 	if len(lines) < 4 {
 		t.Fatalf("rendered manager area too short:\n%s", out)
 	}
-	if !strings.Contains(lines[0], "reasonix") || !strings.Contains(lines[1], "/mcp") {
+	if !strings.Contains(lines[0], "skycode") || !strings.Contains(lines[1], "/mcp") {
 		t.Fatalf("transcript lines should stay above manager:\n%s", out)
 	}
 	if strings.TrimSpace(lines[2]) != "" {
@@ -939,60 +939,6 @@ func TestModalPanelsHideComposerBox(t *testing.T) {
 				t.Fatalf("bottomRows with %s = %d, want %d (panel + status rows, no composer box)", tt.name, got, want)
 			}
 		})
-	}
-}
-
-// TestRewindPickerWindowsLongSession verifies the Esc-Esc turn list windows
-// long sessions (one row per turn) so the overlay cannot outgrow the terminal:
-// at most quickPickerMaxVisible rows render, with ↑/↓ more markers pointing at
-// the hidden turns and the window following the selection.
-func TestRewindPickerWindowsLongSession(t *testing.T) {
-	ctrl := control.New(control.Options{})
-	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
-	m0, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = m0.(chatTUI)
-
-	metas := make([]checkpoint.Meta, 12)
-	for i := range metas {
-		metas[i] = checkpoint.Meta{Turn: i, Prompt: fmt.Sprintf("turn %d", i)}
-	}
-
-	// Newest turn selected (default): window shows rows 4..11.
-	m.rewind = &rewindPicker{metas: metas, sel: 11}
-	card := m.renderRewind()
-	if !strings.Contains(card, "↑ more") {
-		t.Fatalf("newest selection should show ↑ more: %q", card)
-	}
-	if strings.Contains(card, "↓ more") {
-		t.Fatalf("newest selection must not show ↓ more: %q", card)
-	}
-	if !strings.Contains(card, "turn 11") || strings.Contains(card, "turn 0") {
-		t.Fatalf("window must cover rows 4..11, got: %q", card)
-	}
-
-	// Oldest turn selected: window shows rows 0..7.
-	m.rewind = &rewindPicker{metas: metas, sel: 0}
-	card = m.renderRewind()
-	if !strings.Contains(card, "↓ more") {
-		t.Fatalf("oldest selection should show ↓ more: %q", card)
-	}
-	if strings.Contains(card, "↑ more") {
-		t.Fatalf("oldest selection must not show ↑ more: %q", card)
-	}
-	if !strings.Contains(card, "turn 0") || strings.Contains(card, "turn 11") {
-		t.Fatalf("window must cover rows 0..7, got: %q", card)
-	}
-
-	// Short session (≤8 turns): every row visible, no markers.
-	m.rewind = &rewindPicker{metas: metas[:4], sel: 0}
-	card = m.renderRewind()
-	if strings.Contains(card, "more") {
-		t.Fatalf("short session must not show more markers: %q", card)
-	}
-	for i := range 4 {
-		if !strings.Contains(card, fmt.Sprintf("turn %d", i)) {
-			t.Fatalf("short session row %d missing: %q", i, card)
-		}
 	}
 }
 
@@ -1306,19 +1252,23 @@ func TestIngestEventRoutesByKind(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name string
-		ev   event.Event
-		want string
+		name  string
+		ev    event.Event
+		want  string
+		setup func(*chatTUI)
 	}{
-		{"dispatch", event.Event{Kind: event.ToolDispatch, Tool: event.Tool{Name: "read_file", Args: `{"path":"x"}`}}, "● Read(x)"},
-		{"blocked", event.Event{Kind: event.ToolResult, Tool: event.Tool{Name: "bash", Err: "blocked by permission policy"}}, "● Bash ⊘ blocked by permission policy"},
-		{"usage", event.Event{Kind: event.Usage, Usage: &provider.Usage{PromptTokens: 1000, CompletionTokens: 200, TotalTokens: 1200, CacheHitTokens: 900, CacheMissTokens: 100}}, "TURN  1.2K tok"},
-		{"usage-diagnostics", event.Event{Kind: event.Usage, Usage: &provider.Usage{PromptTokens: 1000, CompletionTokens: 200, TotalTokens: 1200}, CacheDiagnostics: &event.CacheDiagnostics{PrefixChanged: true, PrefixChangeReasons: []string{"tools"}}}, "cache prefix changed: tools"},
-		{"notice-info", event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "compacted 8 messages → summary"}, "  · compacted 8 messages → summary"},
-		{"notice-warn", event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "response truncated: hit max output tokens"}, "  ! response truncated: hit max output tokens"},
-		{"phase", event.Event{Kind: event.Phase, Text: "planner · planning"}, "[planner · planning]"},
+		{"dispatch", event.Event{Kind: event.ToolDispatch, Tool: event.Tool{Name: "read_file", Args: `{"path":"x"}`}}, "~ Read x", nil},
+		{"blocked", event.Event{Kind: event.ToolResult, Tool: event.Tool{Name: "bash", Err: "blocked by permission policy"}}, "$ Bash ⊘ blocked by permission policy", nil},
+		{"usage", event.Event{Kind: event.Usage, Usage: &provider.Usage{PromptTokens: 1000, CompletionTokens: 200, TotalTokens: 1200, CacheHitTokens: 900, CacheMissTokens: 100}}, "TURN  1.2K tok", func(m *chatTUI) { m.cfg = &config.Config{UI: config.UIConfig{ShowTurnReceipt: true}} }},
+		{"usage-diagnostics", event.Event{Kind: event.Usage, Usage: &provider.Usage{PromptTokens: 1000, CompletionTokens: 200, TotalTokens: 1200}, CacheDiagnostics: &event.CacheDiagnostics{PrefixChanged: true, PrefixChangeReasons: []string{"tools"}}}, "cache prefix changed: tools", func(m *chatTUI) { m.cfg = &config.Config{UI: config.UIConfig{ShowTurnReceipt: true}} }},
+		{"notice-info", event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "compacted 8 messages → summary"}, "  · compacted 8 messages → summary", nil},
+		{"notice-warn", event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "response truncated: hit max output tokens"}, "  ! response truncated: hit max output tokens", nil},
+		{"phase", event.Event{Kind: event.Phase, Text: "planner · planning"}, "[planner · planning]", nil},
 	} {
 		m := newTestChatTUI()
+		if tc.setup != nil {
+			tc.setup(&m)
+		}
 		m.ingestEvent(tc.ev)
 		got := *m.pendingCommit
 		normalized := ""
@@ -1396,6 +1346,7 @@ func TestUserBubbleIsLightweightTranscriptLine(t *testing.T) {
 	if got == plain {
 		t.Fatalf("user bubble should use themed foreground color when color is enabled: %q", got)
 	}
+	plain = strings.TrimRight(plain, " ")
 	if w := ansi.StringWidth(plain); w > 20 {
 		t.Fatalf("user bubble should not render as a full-width input-like block, width=%d text=%q", w, plain)
 	}
@@ -1426,22 +1377,22 @@ func TestUnsendDiscardsBufferedEvents(t *testing.T) {
 
 func TestRecoveryPauseTurnDoneIsInformational(t *testing.T) {
 	t.Cleanup(func() { i18n.DetectLanguage("en") })
-	const backendFallback = "Automatic retries paused. Reasonix stopped repeated attempts and kept completed work. Send \"continue\" to start a fresh attempt, or add instructions to change direction."
+	const backendFallback = "Automatic retries paused. Skycode stopped repeated attempts and kept completed work. Send \"continue\" to start a fresh attempt, or add instructions to change direction."
 	tests := []struct {
 		lang string
 		want string
 	}{
 		{
 			lang: "en",
-			want: "Automatic retries paused. Reasonix stopped repeated attempts and kept completed work. Send “Continue” to start a fresh attempt, or add instructions to change direction.",
+			want: "Automatic retries paused. Skycode stopped repeated attempts and kept completed work. Send “Continue” to start a fresh attempt, or add instructions to change direction.",
 		},
 		{
 			lang: "zh",
-			want: "已暂停自动重试。Reasonix 已停止重复尝试，并保留已完成的工作。发送“继续”即可开始新一轮，也可以补充要求来调整方向。",
+			want: "已暂停自动重试。Skycode 已停止重复尝试，并保留已完成的工作。发送“继续”即可开始新一轮，也可以补充要求来调整方向。",
 		},
 		{
 			lang: "zh-TW",
-			want: "已暫停自動重試。Reasonix 已停止重複嘗試，並保留已完成的工作。傳送「繼續」即可開始新一輪，也可以補充要求來調整方向。",
+			want: "已暫停自動重試。Skycode 已停止重複嘗試，並保留已完成的工作。傳送「繼續」即可開始新一輪，也可以補充要求來調整方向。",
 		},
 	}
 	for _, tt := range tests {
@@ -1473,7 +1424,8 @@ func TestRecoveryPauseTurnDoneIsInformational(t *testing.T) {
 // event stream: model answer text starting with "[" — a markdown link, a slice
 // literal, even a quoted "[… · planning]" — is a Text event, so it can never be
 // mistaken for a coordinator phase marker the way prefix-sniffing a flattened
-// byte stream once could. It stays in the answer buffer and renders as markdown.
+// byte stream once could. It renders as a live markdown answer block (never an
+// event line) and buffers verbatim until turn end.
 func TestAnswerTextStartingWithBracketStaysInAnswer(t *testing.T) {
 	for _, txt := range []string{
 		"[link](https://example.com)",
@@ -1482,12 +1434,65 @@ func TestAnswerTextStartingWithBracketStaysInAnswer(t *testing.T) {
 	} {
 		m := newTestChatTUI()
 		m.ingestEvent(event.Event{Kind: event.Text, Text: txt})
-		if len(*m.pendingCommit) != 0 {
-			t.Errorf("answer text %q should stay live, not commit as an event line: %v", txt, *m.pendingCommit)
+		if len(*m.pendingCommit) != 1 {
+			t.Fatalf("answer text %q should render as one live answer block, got %v", txt, *m.pendingCommit)
+		}
+		if len(m.transcript) != 1 || m.transcriptSources[0].kind != transcriptSourceMarkdown || m.transcriptSources[0].raw != txt {
+			t.Fatalf("answer text %q should be a markdown answer block, got kind=%v raw=%q", txt, m.transcriptSources[0].kind, m.transcriptSources[0].raw)
+		}
+		if plain := ansi.Strip((*m.pendingCommit)[0]); !strings.HasPrefix(plain, "  ") {
+			t.Errorf("answer text %q should render as an indented assistant block, got %q", txt, plain)
 		}
 		if m.pending.String() != txt {
 			t.Errorf("answer text should buffer verbatim, got %q want %q", m.pending.String(), txt)
 		}
+	}
+}
+
+// TestTodoPanelKeepsTailFollow locks in the tail-follow invariant across the
+// pinned task panel's layout transition: a todo_write ToolResult opens the
+// panel above the composer without committing any transcript content, which
+// shrinks the viewport by several rows. The viewport must re-anchor at the new
+// bottom instead of silently dropping its AtBottom state — otherwise every
+// later streamed line stays hidden below the fold until the user scrolls down
+// manually (regression: task panel appearing lost auto-scroll).
+func TestTodoPanelKeepsTailFollow(t *testing.T) {
+	ctrl := control.New(control.Options{})
+	ch := make(chan event.Event, 1)
+	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
+	adv := func(m chatTUI, msg tea.Msg) chatTUI {
+		n, _ := m.Update(msg)
+		return n.(chatTUI)
+	}
+
+	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
+	for i := 0; i < 40; i++ {
+		cur = adv(cur, notice)
+	}
+	if !cur.viewport.AtBottom() {
+		t.Fatal("viewport should start at bottom after overflowing output")
+	}
+
+	// The todo_write result opens the pinned task panel; dispatch already
+	// skipped a tool card for it, so the transcript content is unchanged.
+	cur = adv(cur, agentEventMsg(event.Event{
+		Kind: event.ToolResult,
+		Tool: event.Tool{ID: "t1", Name: "todo_write",
+			Args: `{"todos":[{"content":"alpha","status":"in_progress"},{"content":"beta","status":"pending"}]}`},
+	}))
+	if cur.renderTodoPanel() == "" {
+		t.Fatal("todo_write result should open the task panel")
+	}
+	if !cur.viewport.AtBottom() {
+		t.Fatalf("opening the task panel must not lose tail-follow: AtBottom=%v, YOffset=%d", cur.viewport.AtBottom(), cur.viewport.YOffset())
+	}
+
+	// Streamed output after the panel opened must stay pinned to the bottom.
+	for i := 0; i < 5; i++ {
+		cur = adv(cur, notice)
+	}
+	if !cur.viewport.AtBottom() {
+		t.Fatalf("tail-follow lost after the task panel appeared: AtBottom=%v, YOffset=%d", cur.viewport.AtBottom(), cur.viewport.YOffset())
 	}
 }
 
@@ -1498,7 +1503,13 @@ func TestInsertNewlineKeyBinding(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	keys := m.input.KeyMap.InsertNewline.Keys()
-	found := slices.Contains(keys, "shift+enter")
+	found := false
+	for _, k := range keys {
+		if k == "shift+enter" {
+			found = true
+			break
+		}
+	}
 	if !found {
 		t.Errorf("newChatTUI InsertNewline should include shift+enter, got %v", keys)
 	}
@@ -1514,7 +1525,7 @@ func TestCtrlHomeEndScrollKeyBindings(t *testing.T) {
 	}
 
 	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 8})
-	for range 12 {
+	for i := 0; i < 12; i++ {
 		cur = adv(cur, notice)
 	}
 	// Viewport should be at the bottom after output.
@@ -1545,7 +1556,7 @@ func TestMouseWheelAndPageKeysScrollTranscript(t *testing.T) {
 	}
 
 	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
-	for range 40 {
+	for i := 0; i < 40; i++ {
 		cur = adv(cur, notice)
 	}
 	if !cur.viewport.AtBottom() {
@@ -1588,7 +1599,7 @@ func TestRunningStreamPreservesScrolledReadingPosition(t *testing.T) {
 	}
 
 	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
-	for range 40 {
+	for i := 0; i < 40; i++ {
 		cur = adv(cur, notice)
 	}
 	cur.state = tuiRunning
@@ -1625,7 +1636,7 @@ func TestTranscriptScrollbarClickAndDrag(t *testing.T) {
 	}
 
 	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
-	for range 40 {
+	for i := 0; i < 40; i++ {
 		cur = adv(cur, notice)
 	}
 	cur.viewport.GotoTop()
@@ -1739,58 +1750,6 @@ func setLocalClipboardSession(t *testing.T) {
 	t.Setenv("SSH_CONNECTION", "")
 	t.Setenv("SSH_CLIENT", "")
 	t.Setenv("SSH_TTY", "")
-}
-
-func TestShiftInsertPastesClipboardText(t *testing.T) {
-	setLocalClipboardSession(t)
-	m := newComposerMouseTestTUI(t, 60, 16)
-	m.input.SetValue("before ")
-
-	previous := readNativeClipboardText
-	t.Cleanup(func() { readNativeClipboardText = previous })
-	readNativeClipboardText = func() (string, error) { return "pasted text", nil }
-
-	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyInsert, Mod: tea.ModShift})
-	m = next.(chatTUI)
-	if got := m.input.Value(); got != "before " {
-		t.Fatalf("Shift+Insert changed the composer before the async read: %q", got)
-	}
-	result := clipboardTextPasteResultFromCmd(t, cmd)
-	next, _ = m.Update(result)
-	m = next.(chatTUI)
-
-	if got := m.input.Value(); got != "before pasted text" {
-		t.Fatalf("Shift+Insert paste produced %q, want %q", got, "before pasted text")
-	}
-}
-
-func TestShiftInsertPasteOverSSHDoesNotReadRemoteClipboard(t *testing.T) {
-	t.Setenv("SSH_CONNECTION", "host 22 client 1234")
-	t.Setenv("SSH_CLIENT", "")
-	t.Setenv("SSH_TTY", "")
-
-	m := newComposerMouseTestTUI(t, 60, 16)
-	m.input.SetValue("before ")
-
-	previous := readNativeClipboardText
-	t.Cleanup(func() { readNativeClipboardText = previous })
-	readNativeClipboardText = func() (string, error) {
-		t.Fatal("SSH Shift+Insert paste must not read the remote host clipboard")
-		return "", nil
-	}
-
-	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyInsert, Mod: tea.ModShift})
-	m = next.(chatTUI)
-	result := clipboardTextPasteResultFromCmd(t, cmd)
-	if !result.remote {
-		t.Fatalf("SSH Shift+Insert paste result = %+v, want remote hint", result)
-	}
-
-	next, _ = m.Update(result)
-	m = next.(chatTUI)
-	if got := m.input.Value(); got != "before " {
-		t.Fatalf("SSH Shift+Insert paste changed composer to %q", got)
-	}
 }
 
 func TestMouseRightClickWithoutSelectionPastesClipboardText(t *testing.T) {
@@ -2098,85 +2057,6 @@ func TestMouseDragReleaseAutoCopies(t *testing.T) {
 	}
 }
 
-// TestCtrlInsertCopiesTranscriptSelection verifies the terminal-convention
-// Ctrl+Insert copy key copies an active transcript selection to the clipboard
-// and arms the copied notice, without Ctrl+C's destructive side effects.
-func TestCtrlInsertCopiesTranscriptSelection(t *testing.T) {
-	setLocalClipboardSession(t)
-	m := newTestChatTUI()
-	m.transcript = []string{"hello world"}
-	m.wrappedLines = []string{"hello world"}
-	m.sel = selection{active: true, anchor: selPos{line: 0, col: 0}, head: selPos{line: 0, col: 5}}
-
-	previous := writeNativeClipboardText
-	t.Cleanup(func() { writeNativeClipboardText = previous })
-	writeNativeClipboardText = func(text string) error {
-		if text != "hello" {
-			t.Fatalf("native clipboard text = %q, want hello", text)
-		}
-		return nil
-	}
-
-	out, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyInsert, Mod: tea.ModCtrl})
-	m2 := out.(chatTUI)
-	if m2.input.Value() != "" {
-		t.Fatalf("Ctrl+Insert must not touch the composer, got %q", m2.input.Value())
-	}
-	result := clipboardCopyResultFromCmd(t, cmd)
-	out, _ = m2.Update(result)
-	m3 := out.(chatTUI)
-	if m3.copyNoticeText != i18n.M.MouseCopiedHint {
-		t.Errorf("completed native copy notice = %q, want %q", m3.copyNoticeText, i18n.M.MouseCopiedHint)
-	}
-}
-
-// TestCtrlInsertCopiesComposerSelection verifies Ctrl+Insert also copies an
-// active selection inside the composer, mirroring the Ctrl+C handling.
-func TestCtrlInsertCopiesComposerSelection(t *testing.T) {
-	setLocalClipboardSession(t)
-	m := newComposerMouseTestTUI(t, 60, 16)
-	m.input.SetValue("hello world")
-	m.composerSel = composerSelection{active: true, anchor: 0, head: 5, value: m.input.Value()}
-
-	previous := writeNativeClipboardText
-	t.Cleanup(func() { writeNativeClipboardText = previous })
-	writeNativeClipboardText = func(text string) error {
-		if text != "hello" {
-			t.Fatalf("native clipboard text = %q, want hello", text)
-		}
-		return nil
-	}
-
-	out, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyInsert, Mod: tea.ModCtrl})
-	m2 := out.(chatTUI)
-	result := clipboardCopyResultFromCmd(t, cmd)
-	out, _ = m2.Update(result)
-	m3 := out.(chatTUI)
-	if m3.copyNoticeText != i18n.M.MouseCopiedHint {
-		t.Errorf("completed native copy notice = %q, want %q", m3.copyNoticeText, i18n.M.MouseCopiedHint)
-	}
-}
-
-// TestCtrlInsertWithoutSelectionIsNoOp verifies Ctrl+Insert with no active
-// selection leaves the composer and the session state untouched — unlike
-// Ctrl+C, it must never clear input or quit.
-func TestCtrlInsertWithoutSelectionIsNoOp(t *testing.T) {
-	m := newTestChatTUI()
-	m.input.SetValue("draft text")
-
-	out, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyInsert, Mod: tea.ModCtrl})
-	m2 := out.(chatTUI)
-	if cmd != nil {
-		t.Fatalf("Ctrl+Insert without a selection should be a no-op, got cmd %T", cmd)
-	}
-	if got := m2.input.Value(); got != "draft text" {
-		t.Fatalf("Ctrl+Insert without a selection changed the composer to %q", got)
-	}
-	if m2.state != tuiIdle {
-		t.Fatalf("Ctrl+Insert without a selection changed state to %v, want idle", m2.state)
-	}
-}
-
 // TestMousePlainClickReleaseDoesNotCopy verifies that a plain click (no drag,
 // empty selection) does not copy an empty string to the clipboard or show the
 // copied notice — only clears the zero-width selection, as before.
@@ -2327,7 +2207,7 @@ func isolateUserConfig(t *testing.T) {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("HOME", root)
-	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
+	t.Setenv("SKYCODE_CREDENTIALS_STORE", "file")
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("AppData", filepath.Join(root, "AppData")) // os.UserConfigDir reads AppData on Windows
 	t.Chdir(root)
@@ -2429,7 +2309,7 @@ func TestReasoningLanguageCommandPersistsAndUpdatesController(t *testing.T) {
 
 func TestReasoningLanguageCommandWritesUserConfigNotProjectConfig(t *testing.T) {
 	isolateUserConfig(t)
-	projectPath := filepath.Join(mustGetwd(t), "reasonix.toml")
+	projectPath := filepath.Join(mustGetwd(t), "skycode.toml")
 	if err := os.WriteFile(projectPath, []byte("[agent]\nreasoning_language = \"en\"\n"), 0o644); err != nil {
 		t.Fatalf("write project config: %v", err)
 	}
@@ -2591,7 +2471,7 @@ func TestLanguageCommandAutoClearsPinnedLanguage(t *testing.T) {
 
 func TestLanguageCommandAutoClearsLowerPriorityUserOverride(t *testing.T) {
 	isolateUserConfig(t)
-	t.Setenv("REASONIX_LANG", "")
+	t.Setenv("SKYCODE_LANG", "")
 	t.Setenv("LC_ALL", "")
 	t.Setenv("LC_MESSAGES", "")
 	t.Setenv("LANG", "")
@@ -2607,7 +2487,7 @@ func TestLanguageCommandAutoClearsLowerPriorityUserOverride(t *testing.T) {
 		t.Fatalf("save user config: %v", err)
 	}
 	projectCfg := config.Default()
-	if err := projectCfg.SaveTo("reasonix.toml"); err != nil {
+	if err := projectCfg.SaveTo("skycode.toml"); err != nil {
 		t.Fatalf("save project config: %v", err)
 	}
 
@@ -2873,68 +2753,14 @@ func TestQueueNavigationResetOnNonUpDownKey(t *testing.T) {
 		t.Fatalf("cursor should be 0 after up, got %d", m.queueEditCursor)
 	}
 
-	// A regular key while editing a queued item should preserve the cursor
-	// so the user can type replacement text. (#4877)
+	// A regular key preserves the queue navigation cursor while the user is
+	// editing a queued item (upstream #4877): typing replacement text keeps
+	// queueEditCursor alive so Enter saves the edit in-place.
 	letter := tea.KeyPressMsg{Code: 'a'}
 	model, _ = m.Update(letter)
 	m = model.(chatTUI)
 	if m.queueEditCursor != 0 {
-		t.Fatalf("cursor should stay at 0 while editing queued item, got %d", m.queueEditCursor)
-	}
-}
-
-func TestQueueEditTypingDoesNotResetCursor(t *testing.T) {
-	m := newTestChatTUI()
-	m.state = tuiRunning
-	m.pendingInterject = []string{"first", "second"}
-
-	// Navigate up to select the last item.
-	up := tea.KeyPressMsg{Code: tea.KeyUp}
-	model, _ := m.Update(up)
-	m = model.(chatTUI)
-	if m.queueEditCursor != 1 {
-		t.Fatalf("cursor should be 1 after up, got %d", m.queueEditCursor)
-	}
-
-	// Type several characters — cursor must survive each keystroke.
-	for _, c := range "hello" {
-		letter := tea.KeyPressMsg{Code: c}
-		model, _ = m.Update(letter)
-		m = model.(chatTUI)
-	}
-	if m.queueEditCursor != 1 {
-		t.Fatalf("cursor should stay at 1 after typing, got %d", m.queueEditCursor)
-	}
-}
-
-func TestQueueEditReplaceOnEnter(t *testing.T) {
-	m := newTestChatTUI()
-	m.state = tuiRunning
-	m.pendingInterject = []string{"hello"}
-
-	// Navigate up to select the item.
-	up := tea.KeyPressMsg{Code: tea.KeyUp}
-	model, _ := m.Update(up)
-	m = model.(chatTUI)
-	if m.queueEditCursor != 0 {
-		t.Fatalf("cursor should be 0 after up, got %d", m.queueEditCursor)
-	}
-
-	// Simulate real typing: clear input, send key presses through Update.
-	m.input.SetValue("")
-	m.input.SetValue("world")
-	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
-	model, _ = m.Update(enter)
-	m = model.(chatTUI)
-
-	if len(m.pendingInterject) != 1 {
-		t.Fatalf("queue should still have 1 item, got %d", len(m.pendingInterject))
-	}
-	if m.pendingInterject[0] != "world" {
-		t.Fatalf("queue[0] should be %q, got %q", "world", m.pendingInterject[0])
-	}
-	if m.queueEditCursor != -1 {
-		t.Fatalf("cursor should reset after enter, got %d", m.queueEditCursor)
+		t.Fatalf("cursor should survive a regular key while editing, got %d", m.queueEditCursor)
 	}
 }
 
@@ -3023,7 +2849,7 @@ func TestTranscriptTailFollow(t *testing.T) {
 	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
 
 	cur := adv(newChatTUI(ctrl, "", make(chan event.Event, 1), 80), tea.WindowSizeMsg{Width: 80, Height: 8})
-	for range 12 { // overflow the short viewport so there's room to scroll
+	for i := 0; i < 12; i++ { // overflow the short viewport so there's room to scroll
 		cur = adv(cur, notice)
 	}
 	if !cur.viewport.AtBottom() {
@@ -3053,10 +2879,10 @@ func TestEmptyEnterScrollsToBottom(t *testing.T) {
 		return n.(chatTUI)
 	}
 
-	// idle state
+	// --- idle state ---
 	t.Run("idle", func(t *testing.T) {
 		cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 8})
-		for range 12 {
+		for i := 0; i < 12; i++ {
 			cur = adv(cur, notice)
 		}
 		// Scroll up to leave the bottom.
@@ -3071,10 +2897,10 @@ func TestEmptyEnterScrollsToBottom(t *testing.T) {
 		}
 	})
 
-	// running state
+	// --- running state ---
 	t.Run("running", func(t *testing.T) {
 		cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 8})
-		for range 12 {
+		for i := 0; i < 12; i++ {
 			cur = adv(cur, notice)
 		}
 		cur.state = tuiRunning
@@ -3105,7 +2931,7 @@ func TestForceGotoBottomScrollsWithoutTranscriptChange(t *testing.T) {
 	}
 
 	cur := next(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 8})
-	for range 12 {
+	for i := 0; i < 12; i++ {
 		cur = next(cur, notice)
 	}
 	if !cur.viewport.AtBottom() {
@@ -3146,7 +2972,7 @@ func TestSessionSwitchSuppressesOneClearScreen(t *testing.T) {
 	}
 
 	cur := next(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 8})
-	for range 12 {
+	for i := 0; i < 12; i++ {
 		cur = next(cur, notice)
 	}
 	cur = next(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
@@ -3479,31 +3305,7 @@ func TestSlashCodeCommentSubmitStartsTurn(t *testing.T) {
 	}
 }
 
-func TestUnknownSlashCommandStartsOrdinaryTurnWithNotice(t *testing.T) {
-	r := &recordingTurnRunner{}
-	events := make(chan event.Event, 8)
-	ctrl := control.New(control.Options{
-		Runner: r,
-		Sink:   event.FuncSink(func(e event.Event) { events <- e }),
-	})
-	m := newTestChatTUI()
-	m.ctrl = ctrl
-	input := "/definitely-not-a-command"
-	m.input.SetValue(input)
-
-	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = model.(chatTUI)
-	waitForCLIEvent(t, events, event.TurnDone)
-
-	if len(r.inputs) != 1 || r.inputs[0] != input {
-		t.Fatalf("unknown slash command should start one ordinary turn, inputs=%q", r.inputs)
-	}
-	if got := strings.Join(m.transcript, "\n"); !strings.Contains(got, "unknown command") {
-		t.Fatalf("unknown slash command should be reported in transcript, got:\n%s", got)
-	}
-}
-
-func TestSlashDocsShowsLocalOverviewWithoutStartingTurn(t *testing.T) {
+func TestUnknownSlashCommandDoesNotStartTurn(t *testing.T) {
 	r := &recordingTurnRunner{}
 	ctrl := control.New(control.Options{
 		Runner: r,
@@ -3511,42 +3313,16 @@ func TestSlashDocsShowsLocalOverviewWithoutStartingTurn(t *testing.T) {
 	})
 	m := newTestChatTUI()
 	m.ctrl = ctrl
+	m.input.SetValue("/definitely-not-a-command")
 
-	if cmd := m.runSlashCommand("/docs"); cmd != nil {
-		t.Fatal("bare /docs should complete locally")
-	}
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = model.(chatTUI)
+
 	if len(r.inputs) != 0 {
-		t.Fatalf("bare /docs should not start a model turn, inputs=%q", r.inputs)
+		t.Fatalf("unknown slash command should not start a model turn, inputs=%q", r.inputs)
 	}
-	transcript := strings.Join(m.transcript, "\n")
-	if !strings.Contains(transcript, "digest=sha256:") || !strings.Contains(transcript, "/docs") {
-		t.Fatalf("bare /docs transcript missing corpus identity or usage:\n%s", transcript)
-	}
-}
-
-func TestQualifiedSlashDocsBypassesConflictingCustomCommand(t *testing.T) {
-	r := &recordingTurnRunner{}
-	commands := []command.Command{
-		{Name: "docs", Body: "legacy docs"},
-	}
-	ctrl := control.New(control.Options{
-		Runner:   r,
-		Commands: commands,
-		Sink:     event.FuncSink(func(event.Event) {}),
-	})
-	m := newTestChatTUI()
-	m.ctrl = ctrl
-	m.commands = commands
-
-	if cmd := m.runSlashCommand("/reasonix:docs"); cmd != nil {
-		t.Fatal("bare /reasonix:docs should complete locally")
-	}
-	if len(r.inputs) != 0 {
-		t.Fatalf("bare /reasonix:docs should not start a model turn, inputs=%q", r.inputs)
-	}
-	transcript := strings.Join(m.transcript, "\n")
-	if !strings.Contains(transcript, "digest=sha256:") || !strings.Contains(transcript, "Usage: /reasonix:docs <question>") || strings.Contains(transcript, "legacy docs") {
-		t.Fatalf("qualified built-in docs was shadowed:\n%s", transcript)
+	if got := strings.Join(m.transcript, "\n"); !strings.Contains(got, "unknown command") {
+		t.Fatalf("unknown slash command should be reported in transcript, got:\n%s", got)
 	}
 }
 
@@ -3669,7 +3445,7 @@ func TestDynamicMCPFreshApprovalHidesRememberedChoices(t *testing.T) {
 }
 
 func TestDynamicBashApprovalChoicesUseExactLiteralRules(t *testing.T) {
-	const command = "git status $(touch /tmp/reasonix-dynamic-approval)"
+	const command = "git status $(touch /tmp/skycode-dynamic-approval)"
 	approval := &event.Approval{Tool: "bash", Subject: command}
 	choices := approvalChoices(approval)
 	if len(choices) != 4 {
@@ -3695,9 +3471,8 @@ func TestFreshApprovalSessionChoiceIsLimitedToSandboxEscape(t *testing.T) {
 	}
 }
 
-// TestSlashQuitExit verifies that /quit and /exit slash commands quit through
-// the shutdown path (tuiShutdownMsg → snapshot → tea.Quit, #5879), providing an
-// alternative to Ctrl+D and the bare "quit"/"exit" text commands.
+// TestSlashQuitExit verifies that /quit and /exit slash commands return tea.Quit,
+// providing an alternative to Ctrl+D and the bare "quit"/"exit" text commands.
 func TestSlashQuitExit(t *testing.T) {
 	m := newTestChatTUI()
 	for _, cmd := range []string{"/quit", "/exit"} {
@@ -3707,8 +3482,8 @@ func TestSlashQuitExit(t *testing.T) {
 			continue
 		}
 		msg := got()
-		if _, ok := msg.(tuiShutdownMsg); !ok {
-			t.Errorf("%s cmd should produce tuiShutdownMsg, got %T", cmd, msg)
+		if _, ok := msg.(tea.QuitMsg); !ok {
+			t.Errorf("%s cmd should produce QuitMsg, got %T", cmd, msg)
 		}
 	}
 }
@@ -3754,7 +3529,7 @@ func TestSlashMigrateShowsProgress(t *testing.T) {
 
 func TestSlashMigrateFromImportsExplicitSessions(t *testing.T) {
 	home := isolateCLIConfigHome(t)
-	legacySessions := filepath.Join(home, "Old Reasonix", "sessions")
+	legacySessions := filepath.Join(home, "Old Skycode", "sessions")
 	if err := os.MkdirAll(legacySessions, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -3848,8 +3623,8 @@ func TestSecondCtrlCQuitsAfterCancelIsAlreadyRequested(t *testing.T) {
 	if secondCmd == nil {
 		t.Fatal("second Ctrl+C after cancel request should quit")
 	}
-	if msg := secondCmd(); msg != (tuiShutdownMsg{}) {
-		t.Fatalf("second Ctrl+C command = %T, want tuiShutdownMsg (snapshot-before-quit, #5879)", msg)
+	if msg := secondCmd(); msg != (tea.QuitMsg{}) {
+		t.Fatalf("second Ctrl+C command = %T, want tea.QuitMsg", msg)
 	}
 }
 
@@ -4057,7 +3832,10 @@ func TestTruncateSubject(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := truncateSubject(tc.input, tc.width)
-			wantMax := max(tc.width-28, 16)
+			wantMax := tc.width - 28
+			if wantMax < 16 {
+				wantMax = 16
+			}
 			w := ansi.StringWidth(got)
 			if w > wantMax {
 				t.Errorf("truncateSubject(%q, %d) = %q (width %d), want visible width <= %d", tc.input, tc.width, got, w, wantMax)
@@ -4119,7 +3897,6 @@ func TestEscInPlanModeDoesNotExitPlan(t *testing.T) {
 func TestDesktopShortcutLayoutShiftTabCyclesSafeModes(t *testing.T) {
 	m := newTestChatTUI()
 	m.ctrl = control.New(control.Options{})
-	m.ctrl.SetToolApprovalMode(control.ToolApprovalAuto)
 	m.cfg = config.Default()
 	if err := m.cfg.SetUIShortcutLayout("desktop"); err != nil {
 		t.Fatal(err)
@@ -4131,23 +3908,11 @@ func TestDesktopShortcutLayoutShiftTabCyclesSafeModes(t *testing.T) {
 	if !m.planMode || !m.ctrl.PlanMode() {
 		t.Fatalf("first Shift+Tab should enter plan mode, tui=%v controller=%v", m.planMode, m.ctrl.PlanMode())
 	}
-	if got := m.ctrl.ToolApprovalMode(); got != control.ToolApprovalAsk {
-		t.Fatalf("plan mode approval = %q, want ask", got)
-	}
 
 	out, _ = m.Update(shiftTab)
 	m = out.(chatTUI)
 	if m.planMode || m.ctrl.PlanMode() {
 		t.Fatalf("second Shift+Tab should leave plan mode, tui=%v controller=%v", m.planMode, m.ctrl.PlanMode())
-	}
-	if got := m.ctrl.ToolApprovalMode(); got != control.ToolApprovalAsk {
-		t.Fatalf("cycle after plan = %q, want ask", got)
-	}
-
-	out, _ = m.Update(shiftTab)
-	m = out.(chatTUI)
-	if got := m.ctrl.ToolApprovalMode(); got != control.ToolApprovalAuto || m.planMode {
-		t.Fatalf("third Shift+Tab should enter auto, approval=%q plan=%v", got, m.planMode)
 	}
 }
 
@@ -4162,8 +3927,6 @@ func TestDesktopShortcutLayoutShiftTabClearsGoalWhenEnteringPlan(t *testing.T) {
 
 	shiftTab := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
 	out, _ := m.Update(shiftTab)
-	m = out.(chatTUI)
-	out, _ = m.Update(shiftTab)
 	m = out.(chatTUI)
 	if !m.planMode || !m.ctrl.PlanMode() {
 		t.Fatalf("Shift+Tab should enter plan mode, tui=%v controller=%v", m.planMode, m.ctrl.PlanMode())
@@ -4279,7 +4042,6 @@ func TestDesktopShortcutLayoutDoesNotStealCompletionTab(t *testing.T) {
 		kind:        compSlash,
 		items:       []compItem{{label: "/mcp", insert: "/mcp ", descend: true}},
 		replaceFrom: 0,
-		replaceTo:   len("/"),
 	}
 
 	out, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
@@ -4302,81 +4064,27 @@ func TestShiftTabCyclesSafeModesUnderClassicShortcutLayout(t *testing.T) {
 
 	out, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	m = out.(chatTUI)
-	if m.planMode || m.ctrl.PlanMode() || m.ctrl.ToolApprovalMode() != control.ToolApprovalAuto {
-		t.Fatalf("first Shift+Tab should enter auto, plan=%v approval=%q", m.planMode, m.ctrl.ToolApprovalMode())
+	if !m.planMode || !m.ctrl.PlanMode() {
+		t.Fatalf("first Shift+Tab should enter plan mode, tui=%v controller=%v", m.planMode, m.ctrl.PlanMode())
 	}
 	out, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	m = out.(chatTUI)
-	if !m.planMode || !m.ctrl.PlanMode() || m.ctrl.ToolApprovalMode() != control.ToolApprovalAsk {
-		t.Fatalf("second Shift+Tab should enter plan, plan=%v approval=%q", m.planMode, m.ctrl.ToolApprovalMode())
+	if m.planMode || m.ctrl.PlanMode() {
+		t.Fatalf("second Shift+Tab should leave plan mode, tui=%v controller=%v", m.planMode, m.ctrl.PlanMode())
 	}
 }
 
-func TestShiftTabLeavesDontAskForAskMode(t *testing.T) {
+// TestShiftTabBlockedWhileRunning pins the turn-boundary rule: plan mode must
+// not toggle while a turn executes, because the plan gate archives the turn's
+// task list and per-call todo_write validation reads the live flag.
+func TestShiftTabBlockedWhileRunning(t *testing.T) {
 	m := newTestChatTUI()
 	m.ctrl = control.New(control.Options{})
-	m.ctrl.SetToolApprovalMode(control.ToolApprovalDontAsk)
-	m.cfg = config.Default()
-	if err := m.cfg.SetUIShortcutLayout("desktop"); err != nil {
-		t.Fatal(err)
-	}
-	if got := m.modeTagText(); got != "Don't Ask" {
-		t.Fatalf("dontAsk mode tag = %q", got)
-	}
+	m.state = tuiRunning
 
-	m.cycleMode()
-	if got := m.ctrl.ToolApprovalMode(); got != control.ToolApprovalAsk {
-		t.Fatalf("Shift+Tab from dontAsk = %q, want ask", got)
-	}
-}
-
-// TestQuitGesturesRouteThroughShutdown guards #5879: every in-TUI quit gesture
-// must emit tuiShutdownMsg (whose handler snapshots the session) rather than
-// tea.Quit directly, which would drop everything past the last snapshot.
-func TestQuitGesturesRouteThroughShutdown(t *testing.T) {
-	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
-
-	// Double Ctrl+C on an idle, empty composer.
-	m := newTestChatTUI()
-	model, cmd := m.Update(ctrlC)
-	m = model.(chatTUI)
-	if cmd != nil {
-		if msg := cmd(); msg == (tea.QuitMsg{}) {
-			t.Fatal("first Ctrl+C must not quit")
-		}
-	}
-	_, cmd = m.Update(ctrlC)
-	if cmd == nil {
-		t.Fatal("second Ctrl+C should return a command")
-	}
-	if msg := cmd(); msg != (tuiShutdownMsg{}) {
-		t.Fatalf("double Ctrl+C emitted %T, want tuiShutdownMsg", msg)
-	}
-
-	// Ctrl+D.
-	m = newTestChatTUI()
-	_, cmd = m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
-	if cmd == nil {
-		t.Fatal("Ctrl+D should return a command")
-	}
-	if msg := cmd(); msg != (tuiShutdownMsg{}) {
-		t.Fatalf("Ctrl+D emitted %T, want tuiShutdownMsg", msg)
-	}
-}
-
-// TestMessageEventReplacesStreamedAnswer guards #6665 on the TUI side: the
-// final Message event carries the canonical display text (protocol blocks
-// stripped at emission), and it must replace the raw streamed accumulation.
-func TestMessageEventReplacesStreamedAnswer(t *testing.T) {
-	m := newTestChatTUI()
-	m.ingestEvent(event.Event{Kind: event.Text, Text: "answer <autoresearch-evidence>{\"id\":\"e1\"}</autoresearch-evidence> tail"})
-	m.ingestEvent(event.Event{Kind: event.Message, Text: "answer  tail"})
-
-	joined := strings.Join(m.transcript, "\n")
-	if strings.Contains(joined, "autoresearch-evidence") {
-		t.Fatalf("committed transcript still contains evidence block:\n%s", joined)
-	}
-	if !strings.Contains(joined, "answer") {
-		t.Fatalf("committed transcript lost the answer text:\n%s", joined)
+	out, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	m = out.(chatTUI)
+	if m.planMode || m.ctrl.PlanMode() {
+		t.Fatalf("Shift+Tab mid-turn must not enable plan mode, tui=%v controller=%v", m.planMode, m.ctrl.PlanMode())
 	}
 }

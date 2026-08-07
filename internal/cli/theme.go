@@ -40,8 +40,6 @@ type cliPalette struct {
 	border       cliColor
 	selection    cliColor
 	userBubbleBG cliColor
-	diffAddBG    cliColor
-	diffDelBG    cliColor
 	toolRead     cliColor
 	toolProc     cliColor
 }
@@ -70,8 +68,6 @@ var (
 		border:       cliColor{"#343945", 237},
 		selection:    cliColor{"#d97757", 173},
 		userBubbleBG: cliColor{"#222631", 235},
-		diffAddBG:    cliColor{"#14351d", 22},
-		diffDelBG:    cliColor{"#3a1619", 52},
 		toolRead:     cliColor{"#56b6c2", 80},
 		toolProc:     cliColor{"#c678dd", 176},
 	}
@@ -88,11 +84,9 @@ var (
 		danger:       cliColor{"#e5484d", 167},
 		info:         cliColor{"#2f5fa8", 25},
 		secondary:    cliColor{"#7d63c8", 104},
-		border:       cliColor{"#ded4c6", 252},
+		border:       cliColor{"#e5e7eb", 254},
 		selection:    cliColor{"#6f91d9", 68},
 		userBubbleBG: cliColor{"#f5f0e8", 255},
-		diffAddBG:    cliColor{"#e5f3e7", 254},
-		diffDelBG:    cliColor{"#fae8e8", 255},
 		toolRead:     cliColor{"#6f91d9", 68},
 		toolProc:     cliColor{"#8a6bb8", 97},
 	}
@@ -105,6 +99,7 @@ var (
 		{name: "porcelain", mode: "light", accent: cliColor{"#7d63c8", 104}, description: "soft violet light accent"},
 		{name: "linen", mode: "light", accent: cliColor{"#bd5d4d", 167}, description: "muted coral light accent"},
 		{name: "glacier", mode: "light", accent: cliColor{"#357fa8", 74}, description: "cool blue light accent"},
+		{name: "deepseek", mode: "light", accent: cliColor{"#3964fe", 63}, description: "DeepSeek official blue light accent"},
 	}
 	activeCLITheme = applyCLIThemeStyle(cliDarkTheme, cliThemeStyles[0])
 	// activeBackgroundProbe stays inert unless a caller that owns stdin opts in
@@ -124,7 +119,7 @@ func configureCLITheme(mode string) {
 }
 
 func configureCLIThemeWithStyle(mode, style string) {
-	if env := strings.TrimSpace(os.Getenv("REASONIX_THEME")); env != "" {
+	if env := strings.TrimSpace(os.Getenv("SKYCODE_THEME")); env != "" {
 		if st, ok := cliThemeStyleByName(env); ok {
 			mode = st.mode
 			style = st.name
@@ -132,7 +127,7 @@ func configureCLIThemeWithStyle(mode, style string) {
 			mode = env
 		}
 	}
-	if env := strings.TrimSpace(os.Getenv("REASONIX_THEME_STYLE")); env != "" {
+	if env := strings.TrimSpace(os.Getenv("SKYCODE_THEME_STYLE")); env != "" {
 		style = env
 	}
 	activeCLITheme = resolveCLIThemeWithStyle(mode, style)
@@ -256,11 +251,11 @@ func (c terminalRGB) looksLight() bool {
 }
 
 func parseOSC11Response(s string) (terminalRGB, bool) {
-	_, after, ok := strings.Cut(s, "]11;")
-	if !ok {
+	idx := strings.Index(s, "]11;")
+	if idx < 0 {
 		return terminalRGB{}, false
 	}
-	payload := after
+	payload := s[idx+len("]11;"):]
 	if end := strings.IndexByte(payload, '\a'); end >= 0 {
 		payload = payload[:end]
 	} else if end := strings.Index(payload, "\x1b\\"); end >= 0 {
@@ -272,8 +267,8 @@ func parseOSC11Response(s string) (terminalRGB, bool) {
 		return terminalRGB{r, g, b}, ok
 	}
 	for _, prefix := range []string{"rgb:", "rgba:"} {
-		if after, ok := strings.CutPrefix(payload, prefix); ok {
-			return parseOSCColorTriplet(after)
+		if strings.HasPrefix(payload, prefix) {
+			return parseOSCColorTriplet(strings.TrimPrefix(payload, prefix))
 		}
 	}
 	return terminalRGB{}, false
@@ -322,15 +317,6 @@ func fgSGR(c cliColor) string {
 		}
 	}
 	return fmt.Sprintf("\033[38;5;%dm", c.xterm)
-}
-
-func bgSGR(c cliColor) string {
-	if trueColorTerminal() {
-		if r, g, b, ok := parseHexColor(c.hex); ok {
-			return fmt.Sprintf("\033[48;2;%d;%d;%dm", r, g, b)
-		}
-	}
-	return fmt.Sprintf("\033[48;5;%dm", c.xterm)
 }
 
 func parseHexColor(hex string) (int, int, int, bool) {
@@ -386,18 +372,16 @@ func init() {
 
 func refreshCLIStyles() {
 	inputBoxStyle = withThemeBorderFG(lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), true, false, true, false), activeCLITheme.accent).
+		Border(lipgloss.NormalBorder(), true, false, true, false), activeCLITheme.border).
 		PaddingLeft(1)
-	todoPanelStyle = withThemeBorderFG(lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), true, false, false, false), activeCLITheme.border).
-		PaddingLeft(1)
+	todoPanelStyle = lipgloss.NewStyle().PaddingLeft(1)
 	statusBlockStyle = themeStyle(activeCLITheme.faint)
 	workingStyle = themeStyle(activeCLITheme.faint)
 	compSelStyle = themeStyle(activeCLITheme.accent).Bold(true)
 	choicePanelStyle = withThemeBorderFG(lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, false, true, false), activeCLITheme.accent).
 		PaddingLeft(1)
-	scrollThumbStyle = themeStyle(activeCLITheme.accent)
+	scrollThumbStyle = themeStyle(activeCLITheme.subtle)
 	scrollTrackStyle = themeStyle(activeCLITheme.faint)
 }
 

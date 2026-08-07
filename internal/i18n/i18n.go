@@ -33,6 +33,7 @@ type Messages struct {
 
 	// chat REPL
 	ChatTip             string // tip line under the chat banner
+	Subtitle            string // tagline under the product name in the welcome box
 	TurnCancelled       string // shown when Ctrl-C aborts the in-flight turn but the chat keeps running
 	InterruptedRecovery string // replay notice for a durable interrupted turn
 	RecoveryPaused      string // controlled Auto retry pause; user can continue in the next message
@@ -88,6 +89,7 @@ type Messages struct {
 	ChatStatusCacheNowFmt                  string // cache status tag, "%s" = latest-turn hit rate with percent sign
 	ChatStatusCacheAvgFmt                  string // cache status tag, "%s" = session-average hit rate with percent sign
 	ChatStatusPlanApproval                 string // shortcuts hint while a plan is pending
+	PlanModeToggleBusy                     string // Shift+Tab plan-mode toggle notice while a turn is running
 	PlanApprovalPrompt                     string // one-line "plan above is ready" banner shown above the input
 	PlanApprovalChoices                    string // start / revise / exit-without-executing choice list
 	ChatStatusToolApproval                 string // shortcuts hint while a tool call awaits approval

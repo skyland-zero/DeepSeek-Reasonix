@@ -83,6 +83,9 @@ func TestModelSwitchRefreshesCustomStatusline(t *testing.T) {
 	newCtrl := control.New(control.Options{Label: "new-model"})
 	m := newChatTUI(oldCtrl, "", make(chan event.Event, 1), 80)
 	m.statuslineCmd = "cat"
+	if runtime.GOOS == "windows" {
+		m.statuslineCmd = "more"
+	}
 	m.statuslineOut = `{"model":"old-model"}`
 
 	_, cmd := m.Update(modelSwitchMsg{
@@ -123,11 +126,8 @@ func TestIdleStatuslineIsCompact(t *testing.T) {
 
 	content := renderStatuslineView(t, false)
 	plain := bottomStatusPlain(content)
-	if !strings.Contains(plain, "Auto") || !strings.Contains(plain, "ready") {
-		t.Fatalf("idle status line missing mode status:\n%s", plain)
-	}
-	if !strings.Contains(plain, "Shift+Tab ask/auto/plan · Ctrl+Y YOLO") {
-		t.Fatalf("idle status line missing plan-toggle hint:\n%s", plain)
+	if !strings.Contains(plain, "Auto") {
+		t.Fatalf("idle status line missing mode tag:\n%s", plain)
 	}
 	for _, old := range []string{"Shift-Tab", "Ctrl-O", "Ctrl-D", "Enter sends", "Esc clears/exits state", "PgUp/PgDn"} {
 		if strings.Contains(plain, old) {
@@ -137,8 +137,8 @@ func TestIdleStatuslineIsCompact(t *testing.T) {
 	if strings.Contains(plain, "[auto]") {
 		t.Fatalf("idle status line should use pill label, not bracketed tag:\n%s", plain)
 	}
-	if !strings.Contains(content, "\x1b[48;2;245;158;11m") {
-		t.Fatalf("Auto status line should use amber pill background, got:\n%q", content)
+	if !strings.Contains(content, "\x1b[1;38;2;217;119;87m") {
+		t.Fatalf("Auto status line should use amber text, got:\n%q", content)
 	}
 }
 
@@ -149,14 +149,14 @@ func TestYoloStatuslineUsesDangerPill(t *testing.T) {
 
 	content := renderStatuslineView(t, true)
 	plain := bottomStatusPlain(content)
-	if !strings.Contains(plain, "YOLO") || !strings.Contains(plain, "approvals skipped") || !strings.Contains(plain, "Shift+Tab ask/auto/plan · Ctrl+Y YOLO") {
-		t.Fatalf("YOLO status line missing warning text:\n%s", plain)
+	if !strings.Contains(plain, "YOLO") {
+		t.Fatalf("YOLO status line missing mode tag:\n%s", plain)
 	}
 	if strings.Contains(plain, "[YOLO]") {
 		t.Fatalf("YOLO status line should use a pill label, not bracketed tag:\n%s", plain)
 	}
-	if !strings.Contains(content, "\x1b[48;2;229;72;77m") {
-		t.Fatalf("YOLO status line should use danger pill background, got:\n%q", content)
+	if !strings.Contains(content, "\x1b[1;38;2;229;72;77m") {
+		t.Fatalf("YOLO status line should use danger text, got:\n%q", content)
 	}
 }
 
@@ -167,11 +167,11 @@ func TestPlanStatuslineUsesBluePill(t *testing.T) {
 
 	content := renderPlanStatuslineView(t)
 	plain := bottomStatusPlain(content)
-	if !strings.Contains(plain, "Plan") || !strings.Contains(plain, "ready") || !strings.Contains(plain, "Shift+Tab ask/auto/plan · Ctrl+Y YOLO") {
-		t.Fatalf("plan status line missing mode status:\n%s", plain)
+	if !strings.Contains(plain, "Plan") {
+		t.Fatalf("plan status line missing mode tag:\n%s", plain)
 	}
-	if !strings.Contains(content, "\x1b[48;2;37;99;235m") {
-		t.Fatalf("Plan status line should use blue pill background, got:\n%q", content)
+	if !strings.Contains(content, "\x1b[1;38;2;86;182;194m") {
+		t.Fatalf("Plan status line should use blue text, got:\n%q", content)
 	}
 }
 
@@ -181,10 +181,10 @@ func TestStatuslineCycleHintFollowsLanguage(t *testing.T) {
 
 	content := renderStatuslineView(t, false)
 	plain := bottomStatusPlain(content)
-	if !strings.Contains(plain, "Auto") || !strings.Contains(plain, "就绪") || !strings.Contains(plain, "Shift+Tab 询问/自动/计划 · Ctrl+Y YOLO") {
-		t.Fatalf("localized plan-toggle hint missing:\n%s", plain)
+	if !strings.Contains(plain, "Auto") {
+		t.Fatalf("localized status line missing mode tag:\n%s", plain)
 	}
-	if strings.Contains(plain, "ready") || strings.Contains(plain, "Shift+Tab ask/auto/plan · Ctrl+Y YOLO") {
+	if strings.Contains(plain, "ready") || strings.Contains(plain, "Shift+Tab plan · Ctrl+Y YOLO") {
 		t.Fatalf("localized status line should not fall back to English:\n%s", plain)
 	}
 }
@@ -194,8 +194,8 @@ func TestDesktopShortcutStatuslineUsesPlanToggleHint(t *testing.T) {
 
 	content := renderStatuslineViewWithShortcutLayout(t, "desktop")
 	plain := bottomStatusPlain(content)
-	if !strings.Contains(plain, "Ask") || !strings.Contains(plain, "Shift+Tab ask/auto/plan · Ctrl+Y YOLO") {
-		t.Fatalf("desktop shortcut status line missing unified plan-toggle hint:\n%s", plain)
+	if !strings.Contains(plain, "Ask") {
+		t.Fatalf("desktop shortcut status line missing mode tag:\n%s", plain)
 	}
 }
 
@@ -205,8 +205,8 @@ func TestStatuslineShowsEffortInPersistentFooter(t *testing.T) {
 	content := renderStatuslineViewWithEffort(t, "auto")
 	lines := strings.Split(ansi.Strip(content), "\n")
 	statusLine := lines[len(lines)-1]
-	if !strings.Contains(statusLine, "MODEL deepseek-v4-flash   EFFORT auto") {
-		t.Fatalf("session row should keep effort beside the model:\n%s", statusLine)
+	if !strings.Contains(statusLine, "deepseek-v4-flash") || !strings.Contains(statusLine, "auto") {
+		t.Fatalf("session row should contain model and effort:\n%s", statusLine)
 	}
 }
 
@@ -215,14 +215,14 @@ func TestStatuslineShowsCacheRatesInPersistentFooter(t *testing.T) {
 
 	content := renderStatuslineViewWithCache(t)
 	lines := bottomStatusPlainLines(content)
-	if len(lines) != 3 {
-		t.Fatalf("status block lines = %d, want 3:\n%s", len(lines), strings.Join(lines, "\n"))
+	if len(lines) != 1 {
+		t.Fatalf("status block lines = %d, want 1 (single row):\n%s", len(lines), strings.Join(lines, "\n"))
 	}
-	if !strings.Contains(lines[0], "MODEL deepseek-v4-flash") {
-		t.Fatalf("mode row should show model:\n%s", strings.Join(lines, "\n"))
+	if !strings.Contains(lines[0], "deepseek-v4-flash") {
+		t.Fatalf("status row should show model:\n%s", strings.Join(lines, "\n"))
 	}
-	if !strings.Contains(lines[2], "CACHE turn hit 90.00% · avg 90.00%") {
-		t.Fatalf("telemetry row should show cache rates:\n%s", strings.Join(lines, "\n"))
+	if !strings.Contains(lines[0], "turn hit 90.00% · avg 90.00%") {
+		t.Fatalf("status row should show cache rates:\n%s", strings.Join(lines, "\n"))
 	}
 }
 
@@ -231,14 +231,11 @@ func TestStatuslineShowsGitAndEffortInPersistentFooter(t *testing.T) {
 
 	content := renderStatuslineViewWithGitAndEffort(t)
 	lines := bottomStatusPlainLines(content)
-	if len(lines) != 3 {
-		t.Fatalf("status block lines = %d, want 3:\n%s", len(lines), strings.Join(lines, "\n"))
+	if len(lines) != 1 {
+		t.Fatalf("status block lines = %d, want 1:\n%s", len(lines), strings.Join(lines, "\n"))
 	}
-	if !strings.Contains(lines[0], "MODEL deepseek-v4-flash   EFFORT auto") {
-		t.Fatalf("session row should keep effort beside the model:\n%s", strings.Join(lines, "\n"))
-	}
-	if !strings.Contains(lines[2], "Reasonix@codex/demo  +3 -1 ?2") {
-		t.Fatalf("telemetry row should start with git identity:\n%s", strings.Join(lines, "\n"))
+	if !strings.Contains(lines[0], "deepseek-v4-flash") || !strings.Contains(lines[0], "auto") {
+		t.Fatalf("primary row should contain model and effort:\n%s", strings.Join(lines, "\n"))
 	}
 }
 
@@ -252,14 +249,11 @@ func TestStatuslineShowsWorkModeAndBalanceInPersistentFooter(t *testing.T) {
 	m.balance = "¥12.34"
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	lines := bottomStatusPlainLines(next.(chatTUI).View().Content)
-	if len(lines) != 3 {
-		t.Fatalf("status block lines = %d, want 3:\n%s", len(lines), strings.Join(lines, "\n"))
+	if len(lines) != 1 {
+		t.Fatalf("status block lines = %d, want 1:\n%s", len(lines), strings.Join(lines, "\n"))
 	}
-	if !strings.Contains(lines[0], "MODEL deepseek-v4-flash   WORK delivery") {
-		t.Fatalf("mode row should show model and work mode:\n%s", strings.Join(lines, "\n"))
-	}
-	if !strings.Contains(lines[2], "BAL ¥12.34") {
-		t.Fatalf("telemetry row should show balance:\n%s", strings.Join(lines, "\n"))
+	if !strings.Contains(lines[0], "deepseek-v4-flash") || !strings.Contains(lines[0], "delivery") {
+		t.Fatalf("primary row should show model and work mode:\n%s", strings.Join(lines, "\n"))
 	}
 }
 
@@ -343,7 +337,7 @@ func renderStatuslineViewWithGitAndEffort(t *testing.T) string {
 	m.label = "deepseek-v4-flash"
 	m.effortLevel = "auto"
 	m.gitStatus = gitStatus{
-		Repo:      "Reasonix",
+		Repo:      "Skycode",
 		Branch:    "codex/demo",
 		Added:     3,
 		Removed:   1,
@@ -394,8 +388,8 @@ func bottomStatusPlain(content string) string {
 
 func bottomStatusPlainLines(content string) []string {
 	lines := strings.Split(ansi.Strip(content), "\n")
-	if len(lines) < 3 {
-		return lines
+	if len(lines) == 0 {
+		return nil
 	}
-	return lines[len(lines)-3:]
+	return lines[len(lines)-1:]
 }

@@ -1,5 +1,6 @@
-// Renders a unified diff as line-numbered, syntax-highlighted rows on
-// green/red background bars with a +/- gutter.
+// Renders a unified diff as line-numbered, syntax-highlighted rows with a
+// colored +/- sign column. Rows carry no background bar: the block reads as
+// quiet indented code under the tool's card.
 package cli
 
 import (
@@ -9,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
@@ -25,27 +25,12 @@ const (
 	// diffFoldLimit is the max lines to show in a diff when folding is enabled
 	// (/diff-fold toggle). 0 means show all lines.
 	diffFoldLimit = 40
-
-	bgDiffAdd = "\033[48;5;22m"
-	bgDiffDel = "\033[48;5;52m"
-	fgDiffAdd = "\033[1;38;5;46m"
-	fgDiffDel = "\033[1;38;5;203m"
 )
 
 var (
 	diffChromaFmt = formatters.Get("terminal256")
 	hunkRE        = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 )
-
-// Resolve on each render so runtime theme switches and theme-sweep preview
-// frames cannot retain syntax colours from the previous light/dark mode.
-func activeDiffChromaStyle() *chroma.Style {
-	mode := chroma.Dark
-	if activeCLITheme.name == "light" {
-		mode = chroma.Light
-	}
-	return styles.GetForMode("github-dark", mode)
-}
 
 // diffStat renders a change's "+A -B" tally, green/red, omitting a zero side.
 func diffStat(d event.FileDiff) string {
@@ -67,14 +52,16 @@ func diffPath(args string) string {
 	return p.Path
 }
 
-// diffBlock renders a writer call as a header line ("✎ name path  +A -B") plus
-// the highlighted, folded diff body. Returns nil when there's no textual diff.
+// diffBlock renders a writer call as a header line ("← Update path  +A -B")
+// plus the highlighted, folded diff body. Returns nil when there's no textual
+// diff. The header uses the same opencode-style line as a tool card so the
+// edit preview keeps the card's icon and verb.
 func diffBlock(name, args string, d event.FileDiff, width, maxLines int) []string {
 	if d.Diff == "" {
 		return nil
 	}
 	path := diffPath(args)
-	header := "  " + toolDot(name) + " " + toolHead(name, path, width)
+	header := toolCardLine(name, args, "", false, width)
 	if stat := diffStat(d); stat != "" {
 		header += "  " + stat
 	}
@@ -113,10 +100,10 @@ func diffBody(d event.FileDiff, path string, width, maxLines int) []string {
 			}
 			hunks++
 		case '+':
-			rows = append(rows, diffBar('+', ln[1:], path, width, bgSGR(activeCLITheme.diffAddBG), fgSGR(activeCLITheme.success), newNo, gw))
+			rows = append(rows, diffRow('+', ln[1:], path, width, newNo, gw))
 			newNo++
 		case '-':
-			rows = append(rows, diffBar('-', ln[1:], path, width, bgSGR(activeCLITheme.diffDelBG), fgSGR(activeCLITheme.err), oldNo, gw))
+			rows = append(rows, diffRow('-', ln[1:], path, width, oldNo, gw))
 			oldNo++
 		case '\\':
 			rows = append(rows, "  "+dim(clampPlain(ln, width-2)))
@@ -125,7 +112,7 @@ func diffBody(d event.FileDiff, path string, width, maxLines int) []string {
 			if ln[0] == ' ' {
 				code = ln[1:]
 			}
-			rows = append(rows, diffContext(code, path, width, newNo, gw))
+			rows = append(rows, diffRow(' ', code, path, width, newNo, gw))
 			oldNo++
 			newNo++
 		}
@@ -139,26 +126,33 @@ func diffBody(d event.FileDiff, path string, width, maxLines int) []string {
 	return rows
 }
 
-// diffBar draws one added/removed row on a full-width coloured background. The
-// bg is re-applied after every chroma reset — \033[0m would otherwise end the
-// bar mid-line — and padded to the bar width so it runs edge to edge.
-func diffBar(sign byte, code, path string, width int, bg, signFg string, lineNo, gw int) string {
+// diffRow draws one diff line: a dim right-aligned line-number gutter, then a
+// colored "+"/"-" sign (or a blank sign column for context) and the
+// syntax-highlighted code. Rows carry no background bar — the sign column
+// alone carries the add/remove meaning, so the block reads as quiet indented
+// code under the tool card. Fixed columns are "  " + gutter + " s " (gw+5),
+// leaving codeW = width-gw-5 so the longest row lands exactly at width.
+func diffRow(sign byte, code, path string, width, lineNo, gw int) string {
 	gutter := dim(lpad(strconv.Itoa(lineNo), gw))
-	barW := max(width-2-gw-1, 4)
-	code = clampPlain(code, barW-2)
+	codeW := width - 2 - gw - 3 // "  " prefix + gutter + " s " sign column
+	if codeW < 1 {
+		codeW = 1
+	}
+	code = clampPlain(code, codeW)
 	if !colorOn() {
+		if sign == ' ' {
+			return "  " + gutter + "   " + code
+		}
 		return "  " + gutter + " " + string(sign) + " " + code
 	}
-	hl := reapplyBG(highlightCode(path, code), bg)
-	pad := max(barW-2-visibleWidth(code), 0)
-	return "  " + gutter + " " + bg + signFg + string(sign) + ansiReset + bg + " " + hl + strings.Repeat(" ", pad) + ansiReset
-}
-
-// diffContext draws an unchanged line: the gutter, no background, code aligned
-// under the +/- rows' code column.
-func diffContext(code, path string, width, lineNo, gw int) string {
-	gutter := dim(lpad(strconv.Itoa(lineNo), gw))
-	return "  " + gutter + "   " + highlightClamped(code, path, width-4-gw)
+	if sign == ' ' {
+		return "  " + gutter + "   " + highlightCode(path, code)
+	}
+	fg := activeCLITheme.success
+	if sign == '-' {
+		fg = activeCLITheme.err
+	}
+	return "  " + gutter + " " + themeFg(fg, string(sign)) + " " + highlightCode(path, code)
 }
 
 func gutterWidth(lines []string) int {
@@ -198,14 +192,6 @@ func atoi(s string) int {
 	return n
 }
 
-func highlightClamped(code, path string, w int) string {
-	c := clampPlain(code, w)
-	if !colorOn() {
-		return c
-	}
-	return highlightCode(path, c)
-}
-
 func clampPlain(s string, w int) string {
 	if w < 1 {
 		w = 1
@@ -215,8 +201,8 @@ func clampPlain(s string, w int) string {
 
 // expandTabs replaces tabs with spaces to the next tabWidth stop. A literal tab
 // has zero StringWidth but the terminal advances it to a tab stop, so leaving
-// tabs in a background-bar row overflows the bar — expand them so the measured
-// width matches what's drawn.
+// tabs in a clamped row overflows the measured width — expand them so the
+// clamped output matches what's drawn.
 func expandTabs(s string) string {
 	if !strings.ContainsRune(s, '\t') {
 		return s
@@ -226,7 +212,7 @@ func expandTabs(s string) string {
 	for _, r := range s {
 		if r == '\t' {
 			n := tabWidth - col%tabWidth
-			for range n {
+			for i := 0; i < n; i++ {
 				b.WriteByte(' ')
 			}
 			col += n
@@ -238,16 +224,6 @@ func expandTabs(s string) string {
 	return b.String()
 }
 
-func reapplyBG(s, bg string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ReplaceAll(s, ansiReset, ansiReset+bg)
-}
-
-// highlightCode returns code with chroma ANSI foreground colours for the lexer
-// matched by path (plain fallback for unknown types). It emits no background, so
-// it composes onto a diff bar; the caller re-applies the bar background.
 func highlightCode(path, code string) string {
 	if code == "" {
 		return code
@@ -261,7 +237,37 @@ func highlightCode(path, code string) string {
 		return code
 	}
 	var b strings.Builder
-	if diffChromaFmt.Format(&b, activeDiffChromaStyle(), it) != nil {
+	styleName := "github-dark"
+	if activeCLITheme.name == "light" {
+		styleName = "github"
+	}
+	style := styles.Get(styleName)
+	if diffChromaFmt.Format(&b, style, it) != nil {
+		return code
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// highlightCodeByLang highlights using a language alias, for use in markdown blocks.
+func highlightCodeByLang(lang, code string) string {
+	if code == "" {
+		return code
+	}
+	lexer := lexers.Get(lang)
+	if lexer == nil {
+		lexer = lexers.Fallback
+	}
+	it, err := lexer.Tokenise(nil, code)
+	if err != nil {
+		return code
+	}
+	var b strings.Builder
+	styleName := "github-dark"
+	if activeCLITheme.name == "light" {
+		styleName = "github"
+	}
+	style := styles.Get(styleName)
+	if diffChromaFmt.Format(&b, style, it) != nil {
 		return code
 	}
 	return strings.TrimRight(b.String(), "\n")

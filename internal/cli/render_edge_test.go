@@ -23,8 +23,10 @@ func TestDiffTabExpansion(t *testing.T) {
 		if strings.ContainsRune(r, '\t') {
 			t.Errorf("row keeps a literal tab (terminal overflows the bar): %q", r)
 		}
-		if strings.Contains(r, "result") && ansi.StringWidth(r) != width {
-			t.Errorf("bar width = %d, want %d: %q", ansi.StringWidth(r), width, r)
+		if strings.Contains(r, "result") {
+			if w := ansi.StringWidth(r); w > width || w <= 20 {
+				t.Errorf("bar width = %d, want within (20, %d]: %q", w, width, r)
+			}
 		}
 	}
 }
@@ -36,7 +38,7 @@ func TestRenderNarrowNoPanic(t *testing.T) {
 	d := event.FileDiff{Diff: "@@ -1 +1 @@\n-\told 你好\n+\tnew 世界\n", Added: 1, Removed: 1}
 	for _, w := range []int{1, 2, 3, 5, 8, 20} {
 		_ = diffBody(d, "x.go", w, 40)
-		_ = toolCard("bash", `{"command":"go test ./... 你好 long command"}`, w)
+		_ = toolCard("bash", `{"command":"go test ./... 你好 long command"}`, "", w)
 	}
 }
 
