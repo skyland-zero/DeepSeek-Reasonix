@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+
+	"reasonix/internal/branding"
 )
 
 // BuildInfo is the machine- and human-readable build identity for
@@ -74,19 +76,20 @@ func versionCommand(args []string, info BuildInfo, allowFlags bool) int {
 }
 
 func versionUsage(w *os.File) {
-	fmt.Fprintln(w, `Usage:
-  reasonix version
-  reasonix version --verbose
-  reasonix version --json
-  reasonix --version
-  reasonix -v
+	fmt.Fprintf(w, `Usage:
+  %[1]s version
+  %[1]s version --verbose
+  %[1]s version --json
+  %[1]s --version
+  %[1]s -v
 
---version / -v always print a single line (reasonix <version>).
-version --verbose prints build metadata; version --json prints the same as JSON.`)
+--version / -v always print a single line (%[1]s <version>).
+version --verbose prints build metadata; version --json prints the same as JSON.
+`, branding.BinaryName)
 }
 
 func (b BuildInfo) singleLine() string {
-	return "reasonix " + strings.TrimSpace(b.withDefaults().Version)
+	return branding.BinaryName + " " + strings.TrimSpace(b.withDefaults().Version)
 }
 
 func (b BuildInfo) verboseText() string {

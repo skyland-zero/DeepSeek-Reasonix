@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/branding"
 	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
@@ -19,7 +20,7 @@ func TestDefaultSystemPromptStaysLean(t *testing.T) {
 			t.Fatalf("default system prompt duplicates %q workflow guidance: %q", duplicate, DefaultSystemPrompt)
 		}
 	}
-	for _, want := range []string{"Reasonix", "available tools", "focused", "concise"} {
+	for _, want := range []string{branding.ProductName, "available tools", "focused", "concise"} {
 		if !strings.Contains(DefaultSystemPrompt, want) {
 			t.Fatalf("default system prompt missing %q: %q", want, DefaultSystemPrompt)
 		}

@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 
+	"reasonix/internal/branding"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
@@ -1793,10 +1794,14 @@ func (c *Config) EnabledPlugins(workspace string, activation *MCPActivationStore
 	return out
 }
 
-// DefaultSystemPrompt is used when config provides none.
-const DefaultSystemPrompt = `You are Reasonix, a coding agent.
+const defaultSystemPrompt = `You are Reasonix, a coding agent.
 Use the available tools when they help you complete the user's request.
 Keep changes focused and responses concise.`
+
+// DefaultSystemPrompt is used when config provides none. It is a var (not a
+// const) only so the fork's product identity is injected from the branding
+// package; the prompt text itself is cache-stable.
+var DefaultSystemPrompt = strings.Replace(defaultSystemPrompt, "Reasonix", branding.ProductName, 1)
 
 // UserDecisionPolicy is appended to every system prompt, including user-custom
 // prompts, so custom personas cannot accidentally remove the `ask` UI contract.

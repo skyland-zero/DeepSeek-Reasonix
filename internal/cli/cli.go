@@ -30,6 +30,7 @@ import (
 	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
+	"reasonix/internal/branding"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -503,7 +504,7 @@ func runAgent(args []string, version string) int {
 	dir := fs.String("dir", "", "change to this directory first (project root); config, sandbox and file tools resolve from here")
 	cont := registerContinueFlag(fs)
 	resume := fs.String("resume", "", "resume by session file path, session ID, or machine session ID (takes precedence over --continue)")
-	copySession := fs.Bool("copy", false, "with --resume/--continue: duplicate the session and continue in the copy (escape hatch when the original is held by another Reasonix process)")
+	copySession := fs.Bool("copy", false, "with --resume/--continue: duplicate the session and continue in the copy (escape hatch when the original is held by another "+branding.ProductName+" process)")
 	effort := fs.String("effort", "", "session reasoning effort override")
 	permissionMode := fs.String("permission-mode", "ask", "permission mode: manual | ask | auto | acceptEdits | dontAsk | plan | bypassPermissions")
 	autoApprove := fs.BoolP("auto", "y", false, "explicitly auto-approve ordinary writer fallbacks (alias for --permission-mode auto)")
@@ -988,7 +989,7 @@ func runServe(args []string) int {
 	}
 	srv.EnableProviderSetupForListener(displayAddr)
 
-	fmt.Printf("reasonix serve — %s on http://%s\n", ctrl.Label(), displayAddr)
+	fmt.Printf("%s serve — %s on http://%s\n", branding.BinaryName, ctrl.Label(), displayAddr)
 	if srv.AuthMode() == "token" {
 		fmt.Printf("  auth: token\n")
 		// Under --port-file the process is supervised (e.g. remote bootstrap):
@@ -1041,7 +1042,7 @@ func runServe(args []string) int {
 // prompt loop that keeps conversation context across turns. Exit with
 // 'exit'/'quit' or Ctrl-D.
 func chatREPL(args []string, version string) int {
-	fs := pflag.NewFlagSet("reasonix", pflag.ContinueOnError)
+	fs := pflag.NewFlagSet(branding.BinaryName, pflag.ContinueOnError)
 	fs.SetInterspersed(true)
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "balanced", "runtime profile: economy | balanced | delivery")
@@ -1049,7 +1050,7 @@ func chatREPL(args []string, version string) int {
 	cont := registerContinueFlag(fs)
 	resume := fs.StringP("resume", "r", "", "resume by session ID/query, or open the picker when no value is given")
 	fs.Lookup("resume").NoOptDefVal = resumePickerSentinel
-	copySession := fs.Bool("copy", false, "with --resume/--continue: duplicate the selected session and continue in the copy (escape hatch when the original is held by another Reasonix process)")
+	copySession := fs.Bool("copy", false, "with --resume/--continue: duplicate the selected session and continue in the copy (escape hatch when the original is held by another "+branding.ProductName+" process)")
 	yolo := fs.Bool("dangerously-skip-permissions", false, "YOLO: auto-approve approval-gated tool calls this session; same runtime mode as Ctrl+Y")
 	fs.BoolVar(yolo, "yolo", false, "alias for --dangerously-skip-permissions")
 	dir := fs.String("dir", "", "change to this directory first (project root); config, sandbox and file tools resolve from here")
@@ -1522,7 +1523,7 @@ func setupConfig(args []string) int {
 	if isInteractive() {
 		rc := interactiveSetup(t.config, t.env)
 		if rc == 0 {
-			fmt.Printf(i18n.M.TryHintFmt+"\n", bold("reasonix"))
+			fmt.Printf(i18n.M.TryHintFmt+"\n", bold(branding.BinaryName))
 		}
 		return rc
 	}
@@ -1594,7 +1595,7 @@ func interactiveSetup(configPath, envPath string) int {
 	// in their language before any substantive prompt.
 	fmt.Println()
 	fmt.Print(boxed([]string{
-		accent("◆") + " " + fmt.Sprintf(i18n.M.WelcomeTitleFmt, bold("reasonix")),
+		accent("◆") + " " + fmt.Sprintf(i18n.M.WelcomeTitleFmt, bold(branding.BinaryName)),
 		"",
 		dim(i18n.M.NoConfigYet),
 	}))
@@ -2705,24 +2706,15 @@ func formatCompactRatioPercent(ratio float64) string {
 }
 
 func configUsage() {
-	fmt.Print(`Usage:
-  reasonix config reasoning-language [--local] [auto|zh|en]
-  reasonix config compact-ratio [--local] [65..85]
-  reasonix config currency [auto|CNY|USD]
-  reasonix config telemetry [auto|on|off]
-`)
+	fmt.Printf("Usage:\n  %s config reasoning-language [--local] [auto|zh|en]\n  %s config compact-ratio [--local] [65..85]\n  %s config currency [auto|CNY|USD]\n  %s config telemetry [auto|on|off]\n", branding.BinaryName, branding.BinaryName, branding.BinaryName, branding.BinaryName)
 }
 
 func configTelemetryUsage() {
-	fmt.Print(`Usage:
-  reasonix config telemetry [auto|on|off]
-`)
+	fmt.Printf("Usage:\n  %s config telemetry [auto|on|off]\n", branding.BinaryName)
 }
 
 func configCompactRatioUsage() {
-	fmt.Print(`Usage:
-  reasonix config compact-ratio [--local] [65..85]
-`)
+	fmt.Printf("Usage:\n  %s config compact-ratio [--local] [65..85]\n", branding.BinaryName)
 }
 
 func startCLITelemetry(cfg *config.Config, opts telemetry.Options) *telemetry.Reporter {
@@ -2786,19 +2778,13 @@ func cliTelemetrySessionMode(cont, resume, copySession bool) string {
 }
 
 func configAutoPlanCompatibilityUsage() {
-	fmt.Print(`Usage:
-  reasonix config auto-plan [off]
-`)
+	fmt.Printf("Usage:\n  %s config auto-plan [off]\n", branding.BinaryName)
 }
 
 func configReasoningLanguageUsage() {
-	fmt.Print(`Usage:
-  reasonix config reasoning-language [--local] [auto|zh|en]
-`)
+	fmt.Printf("Usage:\n  %s config reasoning-language [--local] [auto|zh|en]\n", branding.BinaryName)
 }
 
 func configCurrencyUsage() {
-	fmt.Print(`Usage:
-  reasonix config currency [auto|CNY|USD]
-`)
+	fmt.Printf("Usage:\n  %s config currency [auto|CNY|USD]\n", branding.BinaryName)
 }

@@ -5,6 +5,8 @@
 /npm/.stage/
 /reasonix
 /reasonix.exe
+/skycode
+/skycode.exe
 
 # Website (Astro) build output
 /site/dist/
@@ -35,8 +37,10 @@ mem.prof
 .env.local
 *.local
 /reasonix.toml
+/skycode.toml
 /desktop/.env
 /desktop/reasonix.toml
+/desktop/skycode.toml
 
 # Node / frontend dependencies and caches
 node_modules/

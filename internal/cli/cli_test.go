@@ -17,6 +17,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
+	"reasonix/internal/branding"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -275,7 +276,7 @@ func TestMetadataCommandsDoNotProbeTerminalTheme(t *testing.T) {
 			t.Fatalf("version rc = %d, want 0", rc)
 		}
 	})
-	if !strings.Contains(out, "reasonix test-version") {
+	if !strings.Contains(out, branding.BinaryName+" test-version") {
 		t.Fatalf("version output = %q", out)
 	}
 
@@ -459,7 +460,7 @@ func TestSubcommandHelpReturnsSuccess(t *testing.T) {
 		want string
 	}{
 		{name: "run", args: []string{"run", "--help"}, want: "Usage of run:"},
-		{name: "chat", args: []string{"chat", "--help"}, want: "Usage of reasonix:"},
+		{name: "chat", args: []string{"chat", "--help"}, want: "Usage of " + branding.BinaryName + ":"},
 		{name: "serve", args: []string{"serve", "--help"}, want: "Usage of serve:"},
 		{name: "upgrade", args: []string{"upgrade", "--help"}, want: "Usage of upgrade:"},
 		{name: "remote connect", args: []string{"remote", "connect", "--help"}, want: "Usage of remote connect:"},
@@ -662,7 +663,7 @@ func TestRunMetadataCommandsDoNotMigrateLegacyConfig(t *testing.T) {
 			t.Fatalf("version rc = %d, want 0", rc)
 		}
 	})
-	if !strings.Contains(out, "reasonix test-version") {
+	if !strings.Contains(out, branding.BinaryName+" test-version") {
 		t.Fatalf("version output = %q", out)
 	}
 	if _, err := os.Stat(config.UserConfigPath()); !os.IsNotExist(err) {

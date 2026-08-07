@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"reasonix/internal/acp"
+	"reasonix/internal/branding"
 	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/netclient"
@@ -64,7 +65,7 @@ func TestACPInitializesWithoutAPIKey(t *testing.T) {
 			t.Fatalf("Run --acp initialize rc = %d, want 0", rc)
 		}
 	})
-	if !strings.Contains(out, `"protocolVersion":1`) || !strings.Contains(out, `"name":"reasonix"`) {
+	if !strings.Contains(out, `"protocolVersion":1`) || !strings.Contains(out, `"name":"`+branding.AgentName+`"`) {
 		t.Fatalf("initialize output = %s", out)
 	}
 }
