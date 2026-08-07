@@ -1827,6 +1827,13 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gitStatusMsg:
 		m.gitStatus = msg.status
 
+	case quotaDoneMsg:
+		if msg.err != nil {
+			m.notice(msg.err.Error())
+		} else {
+			m.commitLine(strings.Join(msg.lines, "\n"))
+		}
+
 	case compactDoneMsg:
 		if msg.err != nil {
 			m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashCompactFailed, msg.err))
@@ -4400,6 +4407,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 	case "/status":
 		m.echoLocalCommand(input)
 		m.showStatusDetails()
+	case "/quota":
+		m.echoLocalCommand(input)
+		return m.runQuotaCommand(input)
 	case "/rename":
 		m.runRenameCommand(input)
 	case "/todo":

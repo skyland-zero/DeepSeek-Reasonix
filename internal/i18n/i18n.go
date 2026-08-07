@@ -230,6 +230,11 @@ type Messages struct {
 	CmdRename           string // /rename
 	CmdModel            string // /model
 	CmdStatus           string // /status
+	CmdQuota            string // /quota
+	QuotaSetupDone      string // /quota setup success notice
+	QuotaSetupFailed    string // /quota setup failure prefix
+	QuotaLogoutDone     string // /quota logout success notice
+	QuotaLogoutFailed   string // /quota logout failure prefix
 	CmdWorkMode         string // /work-mode
 	CmdDocs             string // /docs
 	CmdMemory           string // /memory
