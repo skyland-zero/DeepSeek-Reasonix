@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"unicode"
@@ -431,6 +432,7 @@ func (r *mdRenderer) appendInline(b *strings.Builder, n ast.Node, src []byte) {
 func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []byte, indent int) {
 	var header []string
 	var rows [][]string
+	var rowNodes []*extast.TableRow
 
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		switch row := c.(type) {
@@ -438,6 +440,7 @@ func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []by
 			header = r.collectCells(row, src)
 		case *extast.TableRow:
 			rows = append(rows, r.collectCells(row, src))
+			rowNodes = append(rowNodes, row)
 		}
 	}
 	if len(header) == 0 && len(rows) == 0 {
@@ -454,7 +457,11 @@ func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []by
 		return
 	}
 
-	// Natural widths: widest cell content per column (CJK = 2 cols).
+	finalized := r.finalized(n)
+
+	// Natural widths: widest cell content per column (CJK = 2 cols). A
+	// trailing row the model is still writing renders but is excluded, so
+	// a half-written cell can't under-size its column mid-stream.
 	widths := make([]int, cols)
 	pick := func(i, w int) {
 		if i < cols && w > widths[i] {
@@ -464,93 +471,79 @@ func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []by
 	for i, h := range header {
 		pick(i, visibleWidth(h))
 	}
-	for _, row := range rows {
+	for i, row := range rows {
+		if r.rowIncomplete(rowNodes[i], src, !finalized) {
+			continue
+		}
 		for i, c := range row {
 			pick(i, visibleWidth(c))
 		}
 	}
 
-	// Width distribution: a table whose cells are all known — committed, or
-	// closed because a later block means no new | row can join it — gets
-	// water-fill for optimal column balance. A still-open table uses even
-	// distribution like opencode's columnWidthMode "full", so a growing
-	// cell never steals width from neighbours.
-	// Grid overhead: left border(1) + cols×(content + 2 padding) +
-	// (cols−1) between-col separators + right border(1) = 3×cols + 1.
-	// Either way Σwidths must equal available exactly — a table even one
-	// column wider than r.width wraps the trailing rail onto its own line.
+	// Water-fill sizes columns from the cells seen so far, streamed and
+	// committed alike, so the last streamed frame already matches the
+	// committed layout. Grid overhead is 3×cols+1; Σwidths must equal available.
 	const minColWidth = 4 // room for 2 CJK chars or 4 ASCII chars
 	available := r.width - indent - 3*cols - 1
 	if available < cols*minColWidth {
 		available = cols * minColWidth
 	}
 
-	finalized := r.finalized(n)
-	if !finalized {
-		// Even distribution: each column gets at least minColWidth,
-		// remaining space is split evenly across all columns.
-		for i := range widths {
-			widths[i] = available / cols
-		}
-		for i := 0; i < available%cols; i++ {
-			widths[i]++
-		}
-	} else {
-		// Water-fill: narrow columns keep natural width, wide columns share
-		// the rest. Allocations are capped by the still-unspent budget so
-		// Σassigned never exceeds available, regardless of rounding.
-		fair := available / cols
-		if fair < minColWidth {
-			fair = minColWidth
-		}
-		assigned := make([]int, cols)
-		used := 0
-		for i, w := range widths {
-			if w <= fair {
-				assigned[i] = w
-			} else {
-				assigned[i] = fair
-			}
-			used += assigned[i]
-		}
-		remaining := available - used
-		for remaining > 0 {
-			hungry := 0
-			for i := range widths {
-				if widths[i] > assigned[i] {
-					hungry += widths[i] - assigned[i]
-				}
-			}
-			if hungry == 0 {
-				break
-			}
-			dist := 0
-			for i := range assigned {
-				if widths[i] > assigned[i] {
-					extra := (widths[i] - assigned[i]) * remaining / hungry
-					if extra == 0 {
-						extra = 1
-					}
-					if extra > remaining-dist {
-						extra = remaining - dist
-					}
-					assigned[i] += extra
-					dist += extra
-				}
-			}
-			if dist == 0 {
-				break
-			}
-			remaining -= dist
-		}
-		widths = assigned
+	// Water-fill: narrow columns keep natural width, wide columns share
+	// the rest. Allocations are capped by the still-unspent budget so
+	// Σassigned never exceeds available, regardless of rounding.
+	fair := available / cols
+	if fair < minColWidth {
+		fair = minColWidth
 	}
+	assigned := make([]int, cols)
+	used := 0
+	for i, w := range widths {
+		if w <= fair {
+			assigned[i] = w
+		} else {
+			assigned[i] = fair
+		}
+		used += assigned[i]
+	}
+	remaining := available - used
+	for remaining > 0 {
+		hungry := 0
+		for i := range widths {
+			if widths[i] > assigned[i] {
+				hungry += widths[i] - assigned[i]
+			}
+		}
+		if hungry == 0 {
+			break
+		}
+		dist := 0
+		for i := range assigned {
+			if widths[i] > assigned[i] {
+				extra := (widths[i] - assigned[i]) * remaining / hungry
+				if extra == 0 {
+					extra = 1
+				}
+				if extra > remaining-dist {
+					extra = remaining - dist
+				}
+				assigned[i] += extra
+				dist += extra
+			}
+		}
+		if dist == 0 {
+			break
+		}
+		remaining -= dist
+	}
+	widths = assigned
 
 	renderTableGrid(buf, header, rows, widths, indent, !finalized)
 }
 
-// finalized reports whether the table's rows are all known: either the whole
-// answer is committed, or a later block means no new | row can join it.
+// finalized reports whether no new row can join the table: the whole answer
+// is committed, or a later block means the model has moved on. An open
+// streamed table omits its bottom border until then.
 func (r *mdRenderer) finalized(n *extast.Table) bool {
 	if !r.streaming {
 		return true
@@ -558,10 +551,21 @@ func (r *mdRenderer) finalized(n *extast.Table) bool {
 	return tableClosed(n)
 }
 
+// rowIncomplete reports whether row is the trailing line of a still-open
+// streamed table whose source line has no newline yet: the model is mid-cell,
+// and its partial content would under-size the column and cause a second
+// reflow when the cell completes. The row still renders; only its width is
+// excluded from the column fit.
+func (r *mdRenderer) rowIncomplete(row *extast.TableRow, src []byte, open bool) bool {
+	if !r.streaming || !open {
+		return false
+	}
+	return bytes.IndexByte(src[row.Pos():], '\n') < 0
+}
+
 // tableClosed reports whether any block follows the table in document order.
 // GFM tables need contiguous | rows, so once a later block exists no new row
-// can join the table and its widths are final: a streamed table can switch to
-// water-fill the moment the model moves on instead of waiting for commitPending.
+// can join the table and its layout is final.
 func tableClosed(n *extast.Table) bool {
 	for p := ast.Node(n); p != nil; p = p.Parent() {
 		if p.NextSibling() != nil {

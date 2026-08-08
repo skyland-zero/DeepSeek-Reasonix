@@ -147,6 +147,54 @@ func TestRenderTableStreamingClosesEarly(t *testing.T) {
 	}
 }
 
+// TestRenderTableStreamingAdaptiveColumns proves the streaming renderer sizes
+// columns from the rows seen so far: the trailing half-written row (no
+// newline yet) renders but never widens its column, and once the last row
+// completes the streamed layout matches the committed one — so commitPending
+// cannot reflow the table at the end of the answer.
+func TestRenderTableStreamingAdaptiveColumns(t *testing.T) {
+	const md = "| col a | col b |\n" +
+		"|---|---|\n" +
+		"| aa | bb |\n" +
+		"| aaa | bbbbb |\n" +
+		"| aaaaa | b |\n"
+
+	committedCols := railColumns(strings.Split(newMarkdownRenderer(80).Render(md), "\n")[0])
+
+	lines := strings.Split(md, "\n")
+	for i := 3; i <= len(lines); i++ {
+		prefix := strings.Join(lines[:i], "\n")
+		r := newMarkdownRenderer(80)
+		r.streaming = true
+		out := r.Render(prefix)
+		assertTableGrid(t, out, 80)
+		if i == len(lines) {
+			// All rows complete: the streamed layout must already match the
+			// committed one, so the final redraw never reshuffles columns.
+			if got := railColumns(strings.Split(out, "\n")[0]); !slices.Equal(got, committedCols) {
+				t.Errorf("full streamed columns %v != committed %v\n%s", got, committedCols, out)
+			}
+		}
+	}
+
+	// A half-written trailing row (no newline) must not change the columns:
+	// its width is excluded until the model completes the cell.
+	streamed := func(md string) []int {
+		r := newMarkdownRenderer(80)
+		r.streaming = true
+		return railColumns(strings.Split(r.Render(md), "\n")[0])
+	}
+	base := "| col a | col b |\n|---|---|\n| aa | bb |\n"
+	half := base + "| w | zzzzzzzzzz"
+	if got, want := streamed(half), streamed(base); !slices.Equal(got, want) {
+		t.Errorf("half-written row changed columns: half %v, base %v", got, want)
+	}
+	done := streamed(half + " |\n")
+	if slices.Equal(done, streamed(half)) {
+		t.Errorf("completed row should widen its column: half %v, done %v", streamed(half), done)
+	}
+}
+
 // TestRenderTableEmbeddedCellBreaks covers cells where the model pre-wrapped
 // its own content with hard line breaks (surfaced by goldmark as soft breaks).
 // The renderer must re-flow the cell at the column width — not honour the
