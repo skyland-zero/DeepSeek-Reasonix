@@ -24,7 +24,7 @@ import (
 type mdRenderer struct {
 	md             goldmark.Markdown
 	width          int
-	streaming      bool // table bottom border skipped until commitPending finalises
+	streaming      bool // open tables omit their bottom border until committed or closed
 	copyMath       bool
 	copyMathPrefix string
 	nextCopyMathID int
@@ -470,11 +470,11 @@ func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []by
 		}
 	}
 
-	// Width distribution: when streaming we use even distribution like
-	// opencode's columnWidthMode "full" — every column gets its intrinsic
-	// width and remaining space is split evenly, so a growing cell never
-	// steals width from neighbours. The final render (commitPending) uses
-	// water-fill for optimal column balance once all content is known.
+	// Width distribution: a table whose cells are all known — committed, or
+	// closed because a later block means no new | row can join it — gets
+	// water-fill for optimal column balance. A still-open table uses even
+	// distribution like opencode's columnWidthMode "full", so a growing
+	// cell never steals width from neighbours.
 	// Grid overhead: left border(1) + cols×(content + 2 padding) +
 	// (cols−1) between-col separators + right border(1) = 3×cols + 1.
 	// Either way Σwidths must equal available exactly — a table even one
@@ -485,7 +485,8 @@ func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []by
 		available = cols * minColWidth
 	}
 
-	if r.streaming {
+	finalized := r.finalized(n)
+	if !finalized {
 		// Even distribution: each column gets at least minColWidth,
 		// remaining space is split evenly across all columns.
 		for i := range widths {
@@ -545,7 +546,29 @@ func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []by
 		widths = assigned
 	}
 
-	renderTableGrid(buf, header, rows, widths, indent, r.streaming)
+	renderTableGrid(buf, header, rows, widths, indent, !finalized)
+}
+
+// finalized reports whether the table's rows are all known: either the whole
+// answer is committed, or a later block means no new | row can join it.
+func (r *mdRenderer) finalized(n *extast.Table) bool {
+	if !r.streaming {
+		return true
+	}
+	return tableClosed(n)
+}
+
+// tableClosed reports whether any block follows the table in document order.
+// GFM tables need contiguous | rows, so once a later block exists no new row
+// can join the table and its widths are final: a streamed table can switch to
+// water-fill the moment the model moves on instead of waiting for commitPending.
+func tableClosed(n *extast.Table) bool {
+	for p := ast.Node(n); p != nil; p = p.Parent() {
+		if p.NextSibling() != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // collectCells walks a TableHeader / TableRow node and pulls each TableCell's

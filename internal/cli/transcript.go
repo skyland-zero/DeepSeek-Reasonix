@@ -173,8 +173,8 @@ const assistantTranscriptIndent = "  "
 // identity that user, reasoning, tool, and receipt blocks already have. The
 // body keeps a restrained two-cell gutter instead of using a heavy card, and
 // rendering at the reduced width keeps every indented row inside the viewport.
-// streaming=true omits the table bottom border so new rows appear in-place while
-// the model is still producing output.
+// streaming=true keeps still-open tables border-less while the model streams;
+// closed tables render their final layout immediately.
 // renderAssistantMarkdown is the upstream-compatible two-argument form; local
 // streaming call sites use renderAssistantMarkdownStreaming.
 func renderAssistantMarkdown(raw string, contentWidth int) string {

@@ -214,6 +214,30 @@ func TestStreamAnswerRendersFullBufferInPlace(t *testing.T) {
 	}
 }
 
+// TestStreamedTableFinalizesWhenClosed proves a table followed by more output
+// gets water-filled and its bottom border drawn while the answer is still
+// streaming, and commitPending leaves it byte-identical (no layout jump).
+func TestStreamedTableFinalizesWhenClosed(t *testing.T) {
+	m := newTestChatTUI()
+
+	m.ingestEvent(event.Event{Kind: event.Text, Text: "| a | b |\n|----|----|\n| x | y |\n\nAfter the table "})
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "└") {
+		t.Fatalf("closed table should get its bottom border while streaming:\n%s", joined)
+	}
+	before := tableBlock(joined)
+	if before == "" {
+		t.Fatalf("no table block found while streaming:\n%s", joined)
+	}
+
+	m.ingestEvent(event.Event{Kind: event.Text, Text: "keeps streaming."})
+	m.commitPending()
+	after := tableBlock(strings.Join(m.transcript, "\n"))
+	if after != before {
+		t.Errorf("table layout changed at commitPending:\n--- streamed ---\n%s\n--- committed ---\n%s", before, after)
+	}
+}
+
 // TestFlushableContentKeepsTrailingLine proves that flushableContent returns
 // everything up to the last \n — every complete line is flushed row by row so
 // tables and code blocks render in-place. The trailing incomplete line stays

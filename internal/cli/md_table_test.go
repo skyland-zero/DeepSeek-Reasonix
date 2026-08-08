@@ -102,6 +102,51 @@ func TestRenderTableGridStreaming(t *testing.T) {
 	}
 }
 
+// tableBlock extracts the box-drawing table region (first ┌ border to last └
+// border) so a streamed render can be compared against the committed render.
+func tableBlock(out string) string {
+	lines := strings.Split(out, "\n")
+	start, end := -1, -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "┌") && start == -1 {
+			start = i
+		}
+		if strings.Contains(ln, "└") {
+			end = i
+		}
+	}
+	if start == -1 || end == -1 {
+		return ""
+	}
+	return strings.Join(lines[start:end+1], "\n")
+}
+
+// TestRenderTableStreamingClosesEarly proves a table followed by another
+// block is finalised while still streaming — water-fill widths and the bottom
+// border appear the moment the model moves on — and renders byte-identical to
+// the committed render so the streamed view never jumps at commitPending.
+func TestRenderTableStreamingClosesEarly(t *testing.T) {
+	md := userReviewTable + "\n\nAnd a follow-up paragraph after the table."
+	for _, w := range []int{60, 80, 120} {
+		t.Run("width", func(t *testing.T) {
+			r := newMarkdownRenderer(w)
+			r.streaming = true
+			got := r.Render(md)
+
+			block := tableBlock(got)
+			if block == "" {
+				t.Fatalf("no closed table block at width %d:\n%s", w, got)
+			}
+			want := tableBlock(newMarkdownRenderer(w).Render(md))
+			if block != want {
+				t.Errorf("streamed closed table != committed table at width %d\n--- streamed ---\n%s\n--- committed ---\n%s",
+					w, block, want)
+			}
+			assertTableGrid(t, block, w)
+		})
+	}
+}
+
 // TestRenderTableEmbeddedCellBreaks covers cells where the model pre-wrapped
 // its own content with hard line breaks (surfaced by goldmark as soft breaks).
 // The renderer must re-flow the cell at the column width — not honour the

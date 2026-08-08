@@ -7,19 +7,11 @@ import (
 )
 
 // renderTableGrid renders a table with box-drawing grid borders.
-// When streaming is true the bottom border is omitted so new rows appear
-// in-place as the model streams additional table content — the bottom
-// border is only drawn once commitPending finalises the answer.
-//
-//	streaming=false              streaming=true (last render)
-//	┌──────────┬──────────┐      ┌──────────┬──────────┐
-//	│ header1  │ header2  │      │ header1  │ header2  │
-//	├──────────┼──────────┤      ├──────────┼──────────┤
-//	│ cell1    │ cell2    │      │ cell1    │ cell2    │
-//	├──────────┼──────────┤      ├──────────┼──────────┤
-//	│ cell3    │ cell4    │      │ cell3    │ cell4    │
-//	└──────────┴──────────┘      (no bottom border)
-func renderTableGrid(buf *strings.Builder, header []string, rows [][]string, widths []int, indent int, streaming bool) {
+// open=true means the table may still grow — a streamed table whose final
+// rows are not yet known — so the bottom border is omitted and new rows
+// appear in-place; the caller re-renders with open=false once the table
+// closes or the answer is committed.
+func renderTableGrid(buf *strings.Builder, header []string, rows [][]string, widths []int, indent int, open bool) {
 	cols := len(widths)
 	if cols == 0 {
 		return
@@ -62,8 +54,8 @@ func renderTableGrid(buf *strings.Builder, header []string, rows [][]string, wid
 		renderGridRow(buf, prefix, row, widths, cols, false)
 	}
 
-	// Bottom border — skipped while streaming so new rows can appear in-place.
-	if !streaming {
+	// Bottom border — skipped while the table may still grow.
+	if !open {
 		buf.WriteString(prefix)
 		buf.WriteString(border("└", "┴", "┘"))
 		buf.WriteByte('\n')
