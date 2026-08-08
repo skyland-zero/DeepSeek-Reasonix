@@ -23,28 +23,22 @@ const (
 // newChatTUI test call sites stay unchanged.
 var cliBuildVersion = "dev"
 
-// bannerCard renders the codex-style session header card:
-//
-//	╭───────────────────────────╮
-//	│ >_ skycode (v3c3ef171)    │
-//	│   config + plugin driven… │
-//	│ model  deepseek-v4-flash  │
-//	│ dir  /path/to/workspace   │
-//	╰───────────────────────────╯
-//
-// Rounded corners and borders are all dim; content lines keep their own
-// colours (bold title, muted values). Every content line is truncated to the
-// inner width so the card never overflows.
+// bannerCard renders the dim-bordered session header card (title, subtitle,
+// model, workspace) clipped to width. Content lines keep their own colours
+// and truncate to the inner width so the card never overflows.
 func bannerCard(subtitle, model, workspace, version string, width int) string {
 	inner := bannerCardMaxInner
-	if w := width - 4; w < inner { // 2 border columns + 2 padding spaces
+	// total card width = inner + 2 (border columns); content area = inner - 2
+	// (one padding space each side), so every line is inner+2 wide like the
+	// borders and stays below the terminal width instead of hugging it.
+	if w := width - 4; w < inner {
 		inner = max(4, w)
 	}
 
 	var lines []string
 	if inner >= treeIslandMinInner {
 		art := floatingTreeIslandArt()
-		pad := max(0, (inner-treeIslandArtWidth)/2)
+		pad := max(0, (inner-2-treeIslandArtWidth)/2)
 		for _, artLine := range strings.Split(art, "\n") {
 			lines = append(lines, strings.Repeat(" ", pad)+artLine)
 		}
@@ -55,10 +49,10 @@ func bannerCard(subtitle, model, workspace, version string, width int) string {
 		lines = append(lines, subtitle)
 	}
 	if model != "" {
-		lines = append(lines, dim("model")+"  "+truncateMiddle(model, inner-7))
+		lines = append(lines, dim("model")+"  "+truncateMiddle(model, inner-9))
 	}
 	if workspace != "" {
-		lines = append(lines, dim("dir")+"  "+truncateMiddle(workspace, inner-6))
+		lines = append(lines, dim("dir")+"  "+truncateMiddle(workspace, inner-8))
 	}
 
 	var b strings.Builder
@@ -66,11 +60,11 @@ func bannerCard(subtitle, model, workspace, version string, width int) string {
 	b.WriteString(dim("╭" + bar + "╮"))
 	b.WriteByte('\n')
 	for _, line := range lines {
-		content := compactEnd(line, inner)
+		content := compactEnd(line, inner-2)
 		b.WriteString(dim("│"))
 		b.WriteByte(' ')
 		b.WriteString(content)
-		b.WriteString(strings.Repeat(" ", inner-visibleWidth(content)))
+		b.WriteString(strings.Repeat(" ", inner-2-visibleWidth(content)))
 		b.WriteByte(' ')
 		b.WriteString(dim("│"))
 		b.WriteByte('\n')

@@ -54,8 +54,28 @@ func TestBannerCardInnerWidthClamp(t *testing.T) {
 	out := bannerCard("subtitle", "model-x", "", "dev", 400)
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		w := visibleWidth(ansiStrip(line))
-		if w > bannerCardMaxInner+4 {
+		if w > bannerCardMaxInner+2 {
 			t.Fatalf("card should clamp to inner width %d, got %d:\n%q", bannerCardMaxInner, w, line)
+		}
+	}
+}
+
+// TestBannerCardUniformWidth guards the border geometry: content lines must
+// match the border width exactly and stay below the terminal width, else the
+// right border lands on the last column and autowrap eats it.
+func TestBannerCardUniformWidth(t *testing.T) {
+	for _, width := range []int{44, 60, 80, 400} {
+		out := bannerCard(i18n.M.Subtitle, "deepseek-v4-flash", `d:\workspace`, "dev", width)
+		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+		want := visibleWidth(ansiStrip(lines[0]))
+		for i, line := range lines {
+			w := visibleWidth(ansiStrip(line))
+			if w != want {
+				t.Fatalf("width %d: line %d (%d) differs from border width %d:\n%q", width, i, w, want, line)
+			}
+			if w >= width {
+				t.Fatalf("width %d: line %d fills the terminal (%d):\n%q", width, i, w, line)
+			}
 		}
 	}
 }
