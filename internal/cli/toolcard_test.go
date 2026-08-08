@@ -87,10 +87,20 @@ func TestToolCardStates(t *testing.T) {
 	if got := toolCard("task", `{"description":"run tests"}`, "sa_20260801_1234567890abcdef", 80); !strings.Contains(ansi.Strip(got), "[567890abcdef]") || strings.Contains(ansi.Strip(got), "sa_20260801_1234567890abcdef]") {
 		t.Errorf("long task id should truncate to its tail, got %q", got)
 	}
-	// A long pending body clamps to width, not width+2 (the "  " prefix and
-	// "~ " icon slot both count against the budget).
-	if got := toolPendingLine("task", `{"description":"`+strings.Repeat("x", 200)+`"}`, "", 40); ansi.StringWidth(got) > 40 {
-		t.Errorf("pending line overflows width: %d > 40: %q", ansi.StringWidth(got), got)
+	// A long pending body wraps instead of clamping: every line stays inside
+	// width and continuation lines hang at outputIndent (the body indent).
+	got := toolPendingLine("task", `{"description":"`+strings.Repeat("x", 200)+`"}`, "", 40)
+	lines := strings.Split(ansi.Strip(got), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("long pending body should wrap, got %q", got)
+	}
+	for i, l := range lines {
+		if ansi.StringWidth(l) > 40 {
+			t.Errorf("pending line %d overflows width: %d > 40: %q", i, ansi.StringWidth(l), l)
+		}
+		if i > 0 && !strings.HasPrefix(l, "    ") {
+			t.Errorf("continuation line %d lost the hanging indent: %q", i, l)
+		}
 	}
 }
 
@@ -143,26 +153,198 @@ func TestHostToolFailureCardHidesHostError(t *testing.T) {
 	}
 }
 
-// TestToolCardFlattensMultilineArg locks in the single-line card contract for
-// multiline arguments: a bash command with embedded newlines (a git commit -m
-// body, say) must render as one line. The "  " prefix only applies to the
-// first line, so any raw \n in the arg would leave continuation lines flush
-// against the left edge — the regression seen as a missing left margin.
-func TestToolCardFlattensMultilineArg(t *testing.T) {
-	// Width enough to keep the whole flattened arg: the continuation text
-	// must appear space-joined inside the card, with no raw newline.
+// TestToolCardWrapsLongArg locks in the wrap contract for card bodies: a
+// multiline argument still flattens to spaces, and an over-long command wraps
+// with continuation lines hanging at outputIndent — the full command stays
+// visible instead of being truncated, and no raw newline leaks a flush-left
+// row (the "  " prefix only applies to the first line).
+func TestToolCardWrapsLongArg(t *testing.T) {
+	// Short arg: flattened single line, no raw newline.
 	got := toolCard("bash", `{"command":"line1\nline2"}`, "", 120)
 	if strings.Contains(got, "\n") {
-		t.Errorf("toolCard must be a single line, got raw newline: %q", got)
+		t.Errorf("short card must stay a single line, got raw newline: %q", got)
 	}
 	if !strings.Contains(got, "line1 line2") {
 		t.Errorf("multiline arg should flatten to spaces, got %q", got)
 	}
 
-	// Over-wide multiline command: the ansi.Truncate clamp path must not leak
-	// a newline either.
+	// Over-wide multiline command: wraps, every line inside width, the full
+	// text survives (no truncation), and continuations hang at outputIndent.
 	got = toolCard("bash", `{"command":"cd /x && git commit -m \"subject\"\n\nlong body line one\nlong body line two"}`, "", 40)
-	if strings.Contains(got, "\n") {
-		t.Errorf("clamped toolCard must stay a single line, got raw newline: %q", got)
+	plain := ansi.Strip(got)
+	lines := strings.Split(plain, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("long command should wrap, got %q", got)
+	}
+	// The command's head and tail both survive — wrap never truncates.
+	if !strings.Contains(plain, "cd /x && git commit") || !strings.Contains(plain, "body line two") {
+		t.Errorf("wrapped card lost content: %q", got)
+	}
+	for i, l := range lines {
+		if ansi.StringWidth(l) > 40 {
+			t.Errorf("line %d overflows width %d: %q", i, ansi.StringWidth(l), l)
+		}
+		if i > 0 && !strings.HasPrefix(l, "    ") {
+			t.Errorf("continuation line %d lost the hanging indent: %q", i, l)
+		}
+	}
+}
+
+// TestFailedToolCardReplacesPending proves a failed tool swaps its pending
+// card in place: the scrollback holds exactly one card row (the red ⊘ form),
+// never the "~ pending" row followed by a second failure row.
+func TestFailedToolCardReplacesPending(t *testing.T) {
+	m := newTestChatTUI()
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "f1", Name: "read_file", Args: `{"path":"x"}`}})
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "f1", Name: "read_file", Err: "permission denied"}})
+
+	joined := strings.Join(m.transcript, "\n")
+	if strings.Count(joined, "Read") != 1 {
+		t.Fatalf("failed call must leave exactly one card, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "⊘ permission denied") {
+		t.Fatalf("card should show the failure detail, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "~ Read") {
+		t.Fatalf("pending row must not linger after a failure, got:\n%s", joined)
+	}
+	// Re-rendering (a width change) keeps the failure form, not the pending one.
+	m.reflowTranscript(80)
+	if got := strings.Join(m.transcript, "\n"); !strings.Contains(got, "⊘ permission denied") || strings.Contains(got, "~ Read") {
+		t.Fatalf("reflow must keep the failure card, got:\n%s", got)
+	}
+}
+
+// TestToolOutputLineNormalizes proves tool output renders as uniform dim
+// text: the tool's own ANSI colour is stripped (raw colours would fight the
+// dim), over-long lines clamp with a "…" tail, and the result stays inside
+// the width budget.
+func TestToolOutputLineNormalizes(t *testing.T) {
+	got := toolOutputLine("\x1b[32mgreen text\x1b[0m", 80)
+	if strings.Contains(got, "\x1b[32m") {
+		t.Errorf("tool colour should be stripped, got %q", got)
+	}
+	if plain := ansi.Strip(got); !strings.Contains(plain, "green text") {
+		t.Errorf("content lost: %q", got)
+	}
+
+	long := strings.Repeat("x", 100)
+	got = toolOutputLine(long, 40)
+	plain := ansi.Strip(got)
+	if ansi.StringWidth(plain) > 40 {
+		t.Errorf("line exceeds width: %d: %q", ansi.StringWidth(plain), plain)
+	}
+	if !strings.HasSuffix(plain, "…") {
+		t.Errorf("truncated line should signal with a … tail: %q", plain)
+	}
+	if !strings.Contains(plain, "xxx") {
+		t.Errorf("content lost: %q", plain)
+	}
+}
+
+// TestAfterCRKeepsLatestFrame proves carriage-return progress frames render
+// as their latest frame, not a mashed line.
+func TestAfterCRKeepsLatestFrame(t *testing.T) {
+	if got := afterCR(" 25%\r 50%\r 75%"); got != " 75%" {
+		t.Errorf("afterCR = %q, want the last frame", got)
+	}
+	if got := afterCR("plain line"); got != "plain line" {
+		t.Errorf("afterCR must pass through lines without \r, got %q", got)
+	}
+	if got := afterCR("done\r"); got != "" {
+		t.Errorf("trailing \r should clear the line, got %q", got)
+	}
+}
+
+// TestToolProgressNormalizesOutput proves streamed bash output strips the
+// tool's ANSI colour, clamps over-long lines with a "…" tail, and drops
+// stale \r progress frames.
+func TestToolProgressNormalizesOutput(t *testing.T) {
+	m := newTestChatTUI()
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "b1", Name: "bash", Args: `{"command":"go test"}`}})
+	m.ingestEvent(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "b1", Output: "\x1b[32mok\x1b[0m " + strings.Repeat("x", 120) + "\n"}})
+	m.ingestEvent(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "b1", Output: " 50%\r 90%\r"}})
+
+	joined := strings.Join(m.transcript, "\n")
+	if strings.Contains(joined, "\x1b[32m") {
+		t.Errorf("tool colour leaked into the transcript: %q", joined)
+	}
+	plain := ansi.Strip(joined)
+	if strings.Contains(plain, "50%") {
+		t.Errorf("stale \r frame should be dropped, got %q", plain)
+	}
+	if !strings.Contains(plain, "…") {
+		t.Errorf("over-long line should clamp with a … tail, got %q", plain)
+	}
+}
+
+// TestFailedBashKeepsOutputPreview proves a failing bash call keeps both the
+// collapsed output preview and the in-place failure card: the card slot is
+// replaced, the live-output slot is collapsed as usual, and no "~ pending"
+// or duplicate card lingers.
+func TestFailedBashKeepsOutputPreview(t *testing.T) {
+	m := newTestChatTUI()
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "shell-test", Name: "bash", Args: `{"command":"go test"}`}})
+	m.ingestEvent(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "shell-test", Output: "ok pkg/a\n"}})
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "shell-test", Name: "bash", Err: "exit status 1"}})
+
+	joined := strings.Join(m.transcript, "\n")
+	if strings.Count(joined, "Bash") != 1 {
+		t.Fatalf("failed bash must leave exactly one card, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "⊘ exit status 1") {
+		t.Fatalf("card should show the failure detail, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "~ Bash") {
+		t.Fatalf("pending row must not linger, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "ok pkg/a") {
+		t.Fatalf("collapsed output preview should survive the failure, got:\n%s", joined)
+	}
+}
+
+// TestCompletedCardReachesViewport proves a successful tool result re-renders
+// the card in the viewport payload, not just in the transcript model: the
+// wrap cache must be invalidated so the next sync re-wraps the card block.
+// The regression: a bare transcript[idx] assignment left the stale "~ pending"
+// row cached forever — the model said "→ Read" while the screen kept "~ Read".
+func TestCompletedCardReachesViewport(t *testing.T) {
+	m := newTestChatTUI()
+	contentW := transcriptContentWidth(m.width, m.nativeScrollback)
+
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "r1", Name: "read_file", Args: `{"path":"x"}`}})
+	m.syncWrappedLines(contentW, false)
+	if got := m.wrappedContentString(); !strings.Contains(got, "~ Read x") {
+		t.Fatalf("viewport should show the pending card before the result, got:\n%s", got)
+	}
+
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "r1", Name: "read_file", Output: "a\nb\nc\n"}})
+	m.syncWrappedLines(contentW, false)
+	got := m.wrappedContentString()
+	if strings.Contains(got, "~ Read") {
+		t.Fatalf("viewport still shows the stale pending row, got:\n%s", got)
+	}
+	if !strings.Contains(got, "→ Read x") || !strings.Contains(got, "3 lines") {
+		t.Fatalf("viewport should show the completed card with its line count, got:\n%s", got)
+	}
+}
+
+// TestFailedCardReachesViewport proves a failed tool result swaps the pending
+// card for the red ⊘ form in the viewport payload too (renderToolFailure goes
+// through setTranscriptBlock, which invalidates the wrap cache).
+func TestFailedCardReachesViewport(t *testing.T) {
+	m := newTestChatTUI()
+	contentW := transcriptContentWidth(m.width, m.nativeScrollback)
+
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "f1", Name: "read_file", Args: `{"path":"x"}`}})
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "f1", Name: "read_file", Err: "permission denied"}})
+	m.syncWrappedLines(contentW, false)
+
+	got := m.wrappedContentString()
+	if strings.Contains(got, "~ Read") {
+		t.Fatalf("viewport still shows the stale pending row, got:\n%s", got)
+	}
+	if !strings.Contains(got, "⊘ permission denied") {
+		t.Fatalf("viewport should show the failure card, got:\n%s", got)
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"reasonix/internal/event"
 	"reasonix/internal/shellrun"
 	"reasonix/internal/tool"
@@ -52,6 +54,14 @@ func outputBlock(lines []string) string {
 		b.WriteString(ln)
 	}
 	return b.String()
+}
+
+// toolOutputLine renders one line of tool output for a card block: the tool's
+// own ANSI colour is stripped so the uniform dim style holds (raw colours
+// would fight the dim and read as noise), and over-long lines clamp with a
+// "…" tail instead of being cut silently.
+func toolOutputLine(ln string, width int) string {
+	return dim(clampPlainTail(ansi.Strip(ln), width, "…"))
 }
 
 // toolVerb maps a tool's snake_case id to the verb shown in its card.
@@ -268,18 +278,66 @@ func outputLineCount(out string) int {
 	return len(strings.Split(strings.TrimRight(out, "\n"), "\n"))
 }
 
-// toolCardLine renders the full opencode-style card line:
-// "  → Read pkg/a.go [limit=120]", with the icon in the tool's category
-// colour, the verb bold, and the arguments dim. completed switches task's
-// icon (│ → ✓); id appends a short call-id tag to task cards so parallel
-// subagents stay distinguishable. The line is clamped to width.
+// toolCardLine renders the opencode-style card line:
+// "  → Read pkg/a.go [limit=120]", icon in the category colour, verb bold,
+// arguments dim. completed switches task's icon (│ → ✓); id tags parallel
+// subagent cards. The body wraps instead of truncating, so a long bash
+// command stays fully visible, continuations hanging at outputIndent.
 func toolCardLine(name, args, id string, completed bool, width int) string {
 	body := toolBody(name, args)
 	if tail := toolIDTail(name, id); tail != "" {
 		body += " " + dim(tail)
 	}
-	avail := max(width-3, 1) // "  " prefix + icon + space
-	return "  " + themeFg(toolCategoryColor(name), toolIcon(name, completed)) + " " + clampPlain(body, avail)
+	return "  " + themeFg(toolCategoryColor(name), toolIcon(name, completed)) + " " + wrapCardBody(body, cardBodyWidth(width))
+}
+
+// cardBodyWidth is the column budget for a card's body: the "  " margin, the
+// one-column icon slot, and its space leave width-4 for verb + arguments, so
+// the full line (including continuation lines) lands exactly at width.
+func cardBodyWidth(width int) int {
+	return max(width-4, 1)
+}
+
+// wrapCardBody wraps a card body to avail columns, hanging continuation lines
+// at outputIndent so they align with the body start after the icon slot.
+// Lines that fit pass through untouched; an over-wide single word (a long
+// URL, say) stays whole here and is hard-broken by the wrap layer instead.
+func wrapCardBody(body string, avail int) string {
+	if avail < 1 {
+		avail = 1
+	}
+	if visibleWidth(body) <= avail {
+		return body
+	}
+	parts := strings.Split(ansi.Wrap(body, avail, ""), "\n")
+	for i := 1; i < len(parts); i++ {
+		parts[i] = outputIndent + parts[i]
+	}
+	return strings.Join(parts, "\n")
+}
+
+// dimLines applies the dim style per line so SGR stays closed at each line
+// end: a single wrap would leave the attribute spanning the newline, which
+// bleeds into padding and the next row on stricter terminals (Warp).
+func dimLines(s string) string {
+	parts := strings.Split(s, "\n")
+	for i, p := range parts {
+		parts[i] = dim(p)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// iconLineHanging reports whether line is a card-style icon line — "  " margin
+// + one-column icon + space, e.g. a tool card or the "▎ thinking" marker —
+// and returns the hanging indent for its continuation lines: outputIndent, so
+// a wrapped body stays aligned under its start after the icon slot instead of
+// under the two-space margin (the sawtooth seen on resized narrow terminals).
+func iconLineHanging(line string) string {
+	r := []rune(ansi.Strip(line))
+	if len(r) >= 4 && r[0] == ' ' && r[1] == ' ' && r[2] != ' ' && r[3] == ' ' {
+		return outputIndent
+	}
+	return ""
 }
 
 // toolBody builds "Verb 主参数 [k=v, ...]" for every tool, bash included, so
@@ -389,32 +447,70 @@ func toolCard(name, args, id string, width int) string {
 // toolPendingLine renders the opencode-style running state for a dispatched
 // non-streaming tool: "  ~ Read pkg/a.go [limit=120]" — the same card body as
 // the completed form, with the icon slot replaced by "~". It is static —
-// bash's indented "working" tick is the only card animation. The body clamps
-// to width-4 so "  " + "~ " + body lands exactly at width.
+// bash's indented "working" tick is the only card animation. The body wraps
+// like the completed form's, so a long argument stays fully visible.
 func toolPendingLine(name, args, id string, width int) string {
 	body := toolBody(name, args)
 	if tail := toolIDTail(name, id); tail != "" {
 		body += " " + dim(tail)
 	}
-	return "  " + themeFg(toolCategoryColor(name), "~ "+clampPlain(body, max(width-4, 1)))
+	return "  " + themeFg(toolCategoryColor(name), "~ ") + wrapCardBody(body, cardBodyWidth(width))
 }
 
-// toolCardCompleted renders a finished tool line, dimmed like opencode's
-// muted completed rows: "  → Read pkg/a.go [limit=120]". The caller appends
-// the "N lines" suffix from the tool's output.
+// toolCardCompleted renders a finished tool line, the icon keeping its
+// category colour while the body dims like opencode's muted completed rows:
+// "  → Read pkg/a.go [limit=120]". The caller appends the "N lines" suffix
+// from the tool's output.
 func toolCardCompleted(name, args, id string, width int) string {
-	return dim(toolCardLine(name, args, id, true, width))
+	body := toolBody(name, args)
+	if tail := toolIDTail(name, id); tail != "" {
+		body += " " + dim(tail)
+	}
+	return "  " + themeFg(toolCategoryColor(name), toolIcon(name, true)) + " " + dimLines(wrapCardBody(body, cardBodyWidth(width)))
 }
 
 // toolCardFailed renders the failure line: the tool's semantic icon and the
 // "⊘ reason" detail in the error red. An empty reason (host-evidence tools)
-// keeps just the icon + verb marker.
+// keeps just the icon + verb marker. The reason wraps like a card body so a
+// long error stays fully readable.
 func toolCardFailed(name, err string, width int) string {
 	label := bold(toolDisplayName(name))
 	line := "  " + red(toolIcon(name, false)) + " " + label
 	if err == "" {
 		return line
 	}
-	avail := max(width-3-visibleWidth(label)-3, 1) // icon/space + " ⊘ " prefix
-	return line + " " + red("⊘ "+clampPlain(err, avail))
+	avail := max(width-7-visibleWidth(label), 1) // margin + icon + " ⊘ " prefix
+	parts := strings.Split(wrapCardBody(err, avail), "\n")
+	parts[0] = red("⊘ " + parts[0])
+	for i := 1; i < len(parts); i++ {
+		parts[i] = red(parts[i])
+	}
+	return line + " " + strings.Join(parts, "\n")
+}
+
+// afterCR keeps only the content after the last \r, so carriage-return
+// progress frames (git, wget) render as their latest frame instead of a
+// mashed line.
+func afterCR(s string) string {
+	if i := strings.LastIndexByte(s, '\r'); i >= 0 {
+		return s[i+1:]
+	}
+	return s
+}
+
+// renderToolFailure surfaces a failed tool call: the pending card is replaced
+// in place by the red ⊘ form when it still exists (appending a second row
+// would leave the "~ pending" line behind and double every failed call in
+// the scrollback), otherwise a fresh failure card is committed.
+func (m *chatTUI) renderToolFailure(name, args, id, errText string) {
+	if idx, ok := m.toolCardIdx[id]; ok {
+		m.setTranscriptBlock(idx, toolCardFailed(name, errText, m.width), transcriptSource{
+			kind: transcriptSourceToolCard, raw: name, aux: args, id: id,
+			failed: true, err: errText,
+		})
+		m.transcriptDirty = true
+		delete(m.toolCardIdx, id)
+		return
+	}
+	m.commitLine(toolCardFailed(name, errText, m.width))
 }

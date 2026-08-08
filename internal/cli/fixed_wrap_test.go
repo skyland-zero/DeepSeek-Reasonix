@@ -205,3 +205,56 @@ func TestReasoningBlockPreservesIndent(t *testing.T) {
 		t.Errorf("reasoning content lost:\n got  %q\n want %q", got, want)
 	}
 }
+
+// TestIconLineHanging pins the icon-line detection that gives tool cards and
+// the "▎ thinking" marker their hanging continuation indent: only lines with
+// the "  " margin + one-column icon + space qualify; output blocks (4-space
+// lead) and user bubbles ("› ") keep their own lead.
+func TestIconLineHanging(t *testing.T) {
+	cases := []struct {
+		line string
+		want string
+	}{
+		{"  → Read pkg/a.go [limit=120]", "    "},
+		{"  $ Bash cd /x && go test", "    "},
+		{"  ▎ thinking…", "    "},
+		{"    ok  pkg  0.042s", ""},
+		{"  no-icon line", ""},
+		{"› user bubble", ""},
+		{"plain", ""},
+	}
+	for _, c := range cases {
+		if got := iconLineHanging(c.line); got != c.want {
+			t.Errorf("iconLineHanging(%q) = %q, want %q", c.line, got, c.want)
+		}
+	}
+}
+
+// TestWrapFixedContentHangsIconLines proves an overlong tool-card line wraps
+// with continuations at outputIndent (aligned under the body start), never at
+// the two-space margin, and no wrapped line exceeds the container width.
+func TestWrapFixedContentHangsIconLines(t *testing.T) {
+	card := "  → Read " + strings.Repeat("x", 60) + " [limit=120]"
+	out := wrapFixedContent(card, 40)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("overlong card line did not wrap:\n%q", out)
+	}
+	for i, l := range lines {
+		if visibleWidth(l) > 40 {
+			t.Errorf("line %d exceeds width 40: %q", i, l)
+		}
+		if i == 0 {
+			if !strings.HasPrefix(l, "  → ") {
+				t.Errorf("first line lost the card margin: %q", l)
+			}
+		} else if !strings.HasPrefix(l, "    ") {
+			t.Errorf("continuation line %d lost the hanging indent: %q", i, l)
+		}
+	}
+	// The body content survives in order (wrap consumes break-point spaces).
+	flat := strings.ReplaceAll(strings.ReplaceAll(ansi.Strip(out), " ", ""), "\n", "")
+	if !strings.Contains(flat, "Read"+strings.Repeat("x", 60)) {
+		t.Errorf("wrapped card lost content: %q", out)
+	}
+}

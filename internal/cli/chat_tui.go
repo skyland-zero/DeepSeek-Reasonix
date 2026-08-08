@@ -2456,21 +2456,22 @@ func (m *chatTUI) streamToolOutput(id, chunk string) {
 		if i < 0 {
 			break
 		}
-		m.pushToolLine(strings.TrimRight(data[:i], "\r"))
+		m.pushToolLine(afterCR(strings.TrimRight(data[:i], "\r")))
 		data = data[i+1:]
 	}
 	m.toolPartial = data
 
 	vis := m.toolTail
-	if m.toolPartial != "" {
-		vis = append(append([]string{}, m.toolTail...), m.toolPartial)
+	if p := afterCR(m.toolPartial); p != "" {
+		vis = append(append([]string{}, m.toolTail...), p)
 	}
 	if m.nativeScrollback {
 		return
 	}
+	contentW := transcriptContentWidth(m.width, m.nativeScrollback)
 	lines := make([]string, len(vis))
 	for i, ln := range vis {
-		lines[i] = dim(clampPlain(ln, m.width-len([]rune(connector))))
+		lines[i] = toolOutputLine(ln, contentW-len([]rune(connector)))
 	}
 	m.rewriteTranscriptBlock(m.toolStreamIdx, connectorBlock(lines))
 }
@@ -2763,7 +2764,7 @@ func (m *chatTUI) toggleShellOutput() {
 	}
 	lines := strings.Split(strings.TrimRight(full, "\n"), "\n")
 	total := len(lines)
-	innerW := m.width - len([]rune(connector))
+	innerW := transcriptContentWidth(m.width, m.nativeScrollback) - len([]rune(connector))
 	if innerW < 10 {
 		innerW = 80
 	}
@@ -2774,7 +2775,7 @@ func (m *chatTUI) toggleShellOutput() {
 		if total > shellPreviewLines {
 			preview := make([]string, shellPreviewLines+1)
 			for i := range shellPreviewLines {
-				preview[i] = dim(clampPlain(lines[i], innerW))
+				preview[i] = toolOutputLine(lines[i], innerW)
 			}
 			preview[shellPreviewLines] = dim(fmt.Sprintf("… %d more lines (Ctrl+B)", total-shellPreviewLines))
 			m.rewriteTranscriptBlock(lastIdx, connectorBlock(preview))
@@ -2785,7 +2786,7 @@ func (m *chatTUI) toggleShellOutput() {
 		show := min(total, shellExpandMaxLines)
 		rendered := make([]string, show)
 		for i := range show {
-			rendered[i] = dim(clampPlain(lines[i], innerW))
+			rendered[i] = toolOutputLine(lines[i], innerW)
 		}
 		if total > shellExpandMaxLines {
 			rendered = append(rendered, dim(fmt.Sprintf("… %d more lines", total-shellExpandMaxLines)))
@@ -4296,7 +4297,7 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 						m.transcriptSources[idx].lineCount = n
 					}
 				}
-				m.transcript[idx] = m.renderTranscriptSource(m.transcriptSources[idx], m.width)
+				m.rewriteTranscriptBlock(idx, m.renderTranscriptSource(m.transcriptSources[idx], m.width))
 				m.transcriptDirty = true
 				delete(m.toolCardIdx, e.Tool.ID)
 			}
@@ -4323,7 +4324,7 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 			case "todo_write":
 				m.commitLine(toolCardFailed(e.Tool.Name, "", m.width))
 			default:
-				m.commitLine(toolCardFailed(e.Tool.Name, errText, m.width))
+				m.renderToolFailure(e.Tool.Name, e.Tool.Args, e.Tool.ID, errText)
 			}
 		}
 

@@ -48,6 +48,8 @@ type transcriptSource struct {
 	history   []provider.Message
 	completed bool // tool card finished: render the dim completed form
 	lineCount int  // folded "N lines" suffix for a completed non-streaming card
+	failed    bool // tool card failed: render the red ⊘ form in place
+	err       string
 }
 
 func (m *chatTUI) ensureTranscriptSources() {
@@ -104,10 +106,11 @@ func (m *chatTUI) renderTranscriptSource(source transcriptSource, terminalWidth 
 	case transcriptSourceReasoning:
 		return reasoningBlock(source.raw, contentWidth, source.maxLines)
 	case transcriptSourceToolCard:
-		// A completed card re-renders its dim opencode-style line (with the
-		// output's line count folded on); a running one shows the "~ pending"
-		// form carrying the same verb + argument body, except bash which
-		// displays its "$ Bash command" line immediately.
+		// Failed cards re-render their red ⊘ form; completed ones the dim
+		// line; running ones the "~ pending" form (bash shows "$ …" at once).
+		if source.failed {
+			return toolCardFailed(source.raw, source.err, contentWidth)
+		}
 		if source.completed {
 			line := toolCardCompleted(source.raw, source.aux, source.id, contentWidth)
 			if source.lineCount > 0 {
@@ -379,13 +382,10 @@ func transcriptBlockLineCount(block string, width int) int {
 }
 
 // wrapFixedContent wraps multi-line content inside a fixed-width container:
-// every source line keeps its own line break and its leading whitespace, and
-// only genuinely overlong lines wrap — with the leading whitespace carried
-// onto each continuation line, so the container's margins never depend on the
-// content. Tabs expand to the next tab stop first (matching expandTabs), and
-// overlong bodies wrap through lipgloss so SGR styles stay closed at each line
-// end. Lines that already fit pass through byte-for-byte, which the transcript
-// copy/geometry layers rely on.
+// each source line keeps its line break and leading whitespace; overlong
+// lines wrap with that whitespace on every continuation. Icon lines
+// ("  → Read …") hang continuations at outputIndent via iconLineHanging.
+// Fitting lines pass through byte-for-byte (copy/geometry depend on it).
 func wrapFixedContent(s string, width int) string {
 	if width <= 0 {
 		return s
@@ -394,8 +394,16 @@ func wrapFixedContent(s string, width int) string {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
 		lead := line[:len(line)-len(strings.TrimLeft(line, " "))]
+		hang := iconLineHanging(line)
 		body := line[len(lead):]
-		inner := width - visibleWidth(lead)
+		// The body wraps at the wider of the lead and the hanging indent, so
+		// a continuation line never exceeds the container even when it hangs
+		// deeper than the lead (icon lines).
+		innerW := visibleWidth(lead)
+		if hang != "" {
+			innerW = max(innerW, visibleWidth(hang))
+		}
+		inner := width - innerW
 		if inner < 1 {
 			inner = 1
 		}
@@ -410,7 +418,11 @@ func wrapFixedContent(s string, width int) string {
 		for j, p := range parts {
 			parts[j] = strings.TrimRight(p, " ")
 		}
-		lines[i] = lead + strings.Join(parts, "\n"+lead)
+		continuation := lead
+		if hang != "" {
+			continuation = hang
+		}
+		lines[i] = lead + strings.Join(parts, "\n"+continuation)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1229,20 +1241,21 @@ func (m *chatTUI) collapseToolOutput(id, resultOutput string) {
 			n++
 		}
 		if n > 0 {
+			contentW := transcriptContentWidth(m.width, m.nativeScrollback)
 			if full, ok := m.shellOutputs[id]; ok {
 				lines := strings.Split(strings.TrimRight(full, "\n"), "\n")
 				total := len(lines)
 				if total > shellPreviewLines {
 					preview := make([]string, shellPreviewLines+1)
 					for i := 0; i < shellPreviewLines; i++ {
-						preview[i] = dim(clampPlain(lines[i], m.width-len([]rune(outputIndent))))
+						preview[i] = toolOutputLine(lines[i], contentW-len([]rune(outputIndent)))
 					}
 					preview[shellPreviewLines] = dim(fmt.Sprintf("… %d more lines", total-shellPreviewLines))
 					m.commitLine(outputBlock(preview))
 				} else {
 					rendered := make([]string, total)
 					for i, ln := range lines {
-						rendered[i] = dim(clampPlain(ln, m.width-len([]rune(outputIndent))))
+						rendered[i] = toolOutputLine(ln, contentW-len([]rune(outputIndent)))
 					}
 					m.commitLine(outputBlock(rendered))
 				}
@@ -1319,19 +1332,20 @@ func (m *chatTUI) collapseShellSlot(id string, idx int, resultOutput string) {
 	}
 	if full, ok := m.shellOutputs[id]; ok {
 		// Shell command: show first N lines + remaining-line count.
+		contentW := transcriptContentWidth(m.width, m.nativeScrollback)
 		lines := strings.Split(strings.TrimRight(full, "\n"), "\n")
 		total := len(lines)
 		if total > shellPreviewLines {
 			preview := make([]string, shellPreviewLines+1)
 			for i := 0; i < shellPreviewLines; i++ {
-				preview[i] = dim(clampPlain(lines[i], m.width-len([]rune(outputIndent))))
+				preview[i] = toolOutputLine(lines[i], contentW-len([]rune(outputIndent)))
 			}
 			preview[shellPreviewLines] = dim(fmt.Sprintf("… %d more lines", total-shellPreviewLines))
 			m.rewriteTranscriptBlock(idx, outputBlock(preview))
 		} else {
 			rendered := make([]string, total)
 			for i, ln := range lines {
-				rendered[i] = dim(clampPlain(ln, m.width-len([]rune(outputIndent))))
+				rendered[i] = toolOutputLine(ln, contentW-len([]rune(outputIndent)))
 			}
 			m.rewriteTranscriptBlock(idx, outputBlock(rendered))
 		}
@@ -1368,7 +1382,7 @@ func shellFirstLinePreview(lines []string, width int) []string {
 	if first == "" {
 		return nil
 	}
-	out := []string{dim(clampPlain(first, width-len([]rune(outputIndent))))}
+	out := []string{toolOutputLine(first, width-len([]rune(outputIndent)))}
 	if rest > 0 {
 		out = append(out, dim(fmt.Sprintf("… %d more lines", rest)))
 	}

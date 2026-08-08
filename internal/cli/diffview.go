@@ -63,7 +63,14 @@ func diffBlock(name, args string, d event.FileDiff, width, maxLines int) []strin
 	path := diffPath(args)
 	header := toolCardLine(name, args, "", false, width)
 	if stat := diffStat(d); stat != "" {
-		header += "  " + stat
+		// The stat sits on the icon line even when the card body wrapped
+		// (edit paths are short, but narrow terminals can still break them):
+		// appending after the wrap would drift it onto a continuation line.
+		if i := strings.IndexByte(header, '\n'); i >= 0 {
+			header = header[:i] + "  " + stat + header[i:]
+		} else {
+			header += "  " + stat
+		}
 	}
 	return append([]string{header}, diffBody(d, path, width, maxLines)...)
 }
@@ -193,10 +200,17 @@ func atoi(s string) int {
 }
 
 func clampPlain(s string, w int) string {
+	return clampPlainTail(s, w, "")
+}
+
+// clampPlainTail truncates to w visible columns, appending tail (typically
+// "…") when truncation happens, so a cut line signals the loss instead of
+// ending mid-word.
+func clampPlainTail(s string, w int, tail string) string {
 	if w < 1 {
 		w = 1
 	}
-	return ansi.Truncate(expandTabs(s), w, "")
+	return ansi.Truncate(expandTabs(s), w, tail)
 }
 
 // expandTabs replaces tabs with spaces to the next tabWidth stop. A literal tab
