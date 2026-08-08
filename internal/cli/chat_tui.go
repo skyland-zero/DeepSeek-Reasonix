@@ -2823,7 +2823,7 @@ func (m *chatTUI) compactThinking() bool {
 // (compact) or the plain "▎ thinking…" rule (expanded), with the elapsed
 // seconds and the output token count once available. The compact marker is
 // warn-yellow — the thinking-activity colour Claude Code and opencode use —
-// so it stands out from dim tool/body text; it falls back to dim on commit.
+// so it stands out from dim tool/body text.
 func (m *chatTUI) thinkingMarkerLine() string {
 	if !m.thinkingCompact {
 		return dim("  ▎ " + i18n.M.ChatThinking)
@@ -2838,17 +2838,21 @@ func (m *chatTUI) thinkingMarkerLine() string {
 
 // thoughtSummaryLine renders the collapsed marker after thinking closes: the
 // star frozen on its first frame (compact) or the "▎" rule (expanded), the
-// elapsed time, and the final output token count when available.
+// elapsed time, and the final output token count when available. The compact
+// summary keeps the thinking yellow so the marker colour is stable across the
+// stream→commit transition.
 func (m *chatTUI) thoughtSummaryLine(secs int) string {
 	prefix := "  ▎ "
+	style := dim
 	if m.thinkingCompact {
 		prefix = "  ✶ "
+		style = yellow
 	}
 	line := fmt.Sprintf(prefix+i18n.M.ChatThoughtForFmt, secs)
 	if m.turnTokens > 0 {
 		line += " · ↓" + shortTokens(m.turnTokens)
 	}
-	return dim(line)
+	return style(line)
 }
 
 // commitReasoning closes the live thinking block: the "▎ thinking…" marker is

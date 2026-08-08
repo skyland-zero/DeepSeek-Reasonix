@@ -4,7 +4,7 @@
     "commented-code": 3,
     "complexity": 2062,
     "essay": 4153,
-    "file-size": 108841,
+    "file-size": 108845,
     "function-size": 9158,
     "layering": 1,
     "marker": 0,
@@ -775,7 +775,7 @@
     "internal/cli/chat_tui.go": {
       "complexity": 319,
       "essay": 117,
-      "file-size": 4479,
+      "file-size": 4483,
       "function-size": 1252
     },
     "internal/cli/chat_tui_paste.go": {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/config"
@@ -109,6 +110,11 @@ func TestThinkingCompactStarMarker(t *testing.T) {
 	m := newTestChatTUI()
 	m.thinkingCompact = true
 
+	// Pin the colour profile so the warn-yellow marker can be asserted.
+	prevColor := activeColorProfile
+	activeColorProfile = colorprofile.ANSI256
+	defer func() { activeColorProfile = prevColor }()
+
 	m.ingestEvent(event.Event{Kind: event.Reasoning, Text: "hidden reasoning"})
 	if len(m.transcript) != 1 {
 		t.Fatalf("compact thinking should open only the marker, transcript=%v", m.transcript)
@@ -137,6 +143,9 @@ func TestThinkingCompactStarMarker(t *testing.T) {
 	if !strings.ContainsAny(plain, "✸✹✺✷") {
 		t.Errorf("marker frame should advance after ticks: %q", plain)
 	}
+	if !strings.Contains(m.transcript[0], "\033[38;5;179m") {
+		t.Errorf("live compact marker should be warn-yellow: %q", m.transcript[0])
+	}
 
 	m.ingestEvent(event.Event{Kind: event.Text, Text: "answer"}) // closes thinking
 	if len(m.transcript) != 3 {
@@ -145,6 +154,9 @@ func TestThinkingCompactStarMarker(t *testing.T) {
 	plain = ansi.Strip(m.transcript[0])
 	if !strings.Contains(plain, "✶ thought for 3s") || !strings.Contains(plain, "↓1.5K") {
 		t.Errorf("collapsed marker should freeze the star + duration + tokens: %q", plain)
+	}
+	if !strings.Contains(m.transcript[0], "\033[38;5;179m") {
+		t.Errorf("collapsed compact marker should keep the thinking yellow: %q", m.transcript[0])
 	}
 	if strings.Contains(strings.Join(m.transcript, "\n"), "hidden reasoning") {
 		t.Fatalf("compact thinking text must stay hidden after commit, transcript=%v", m.transcript)
