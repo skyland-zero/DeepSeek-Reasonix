@@ -97,6 +97,12 @@ type chatTUI struct {
 	// turnTokens accumulates this turn's output tokens (summed from per-step Usage
 	// events) for the live "↓N" readout in the running status line.
 	turnTokens int
+	// thinkChars is the rune count of the current live thinking stream. It is
+	// counted from the streamed reasoning deltas themselves — the only data
+	// available mid-think — so the thinking marker's "¶N" readout reflects the
+	// current stream instead of stale per-request Usage events (which providers
+	// only emit after the request finishes).
+	thinkChars int
 	// showTurnUsage controls whether completed per-request token/cost receipts are
 	// retained in transcript scrollback. Usage accounting remains active either way.
 	showTurnUsage bool
@@ -1715,6 +1721,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.runStart = time.Now()
 				m.elapsed = 0
 				m.turnTokens = 0
+				m.thinkChars = 0
 				m.pendingRestore = line
 				m.bubbleStartIdx = len(m.transcript)
 				m.commitLine("")
@@ -2335,6 +2342,15 @@ const reasoningTailLines = 12
 // visible while the model works without re-rendering the whole thing per token.
 func (m *chatTUI) streamReasoning(chunk string) {
 	m.reasoning.WriteString(chunk) // full text retained for verbose mode
+	if chunk != "" {
+		m.thinkChars += utf8.RuneCountInString(chunk)
+		if m.reasoningLineIdx >= 0 {
+			// Keep the live marker's "¶N" readout current as the think stream
+			// grows (compact star and expanded ▎ marker alike).
+			m.setTranscriptBlock(m.reasoningLineIdx, m.thinkingMarkerLine(), transcriptSource{kind: transcriptSourceFixed})
+			m.transcriptDirty = true
+		}
+	}
 	if m.reasoningTextIdx < 0 {
 		return
 	}
@@ -2819,26 +2835,33 @@ func (m *chatTUI) compactThinking() bool {
 	return m.thinkingCompact && !m.showReasoning
 }
 
+// thinkingCharsSuffix renders the live "¶N" readout — the character count of
+// the current think stream — or "" while nothing has streamed yet.
+func (m *chatTUI) thinkingCharsSuffix() string {
+	if m.thinkChars <= 0 {
+		return ""
+	}
+	return " · ¶" + shortTokens(m.thinkChars)
+}
+
 // thinkingMarkerLine renders the live thinking marker: the animated star frame
 // (compact) or the plain "▎ thinking…" rule (expanded), with the elapsed
-// seconds and the output token count once available. The compact marker is
-// warn-yellow — the thinking-activity colour Claude Code and opencode use —
-// so it stands out from dim tool/body text.
+// seconds and the streamed character count once text has flowed. The compact
+// marker is warn-yellow — the thinking-activity colour Claude Code and opencode
+// use — so it stands out from dim tool/body text.
 func (m *chatTUI) thinkingMarkerLine() string {
 	if !m.thinkingCompact {
-		return dim("  ▎ " + i18n.M.ChatThinking)
+		return dim("  ▎ " + i18n.M.ChatThinking + m.thinkingCharsSuffix())
 	}
 	frame := thinkingStarFrames[m.thinkingFrame%len(thinkingStarFrames)]
 	line := fmt.Sprintf("  "+i18n.M.ChatThinkingLiveFmt, frame, i18n.M.ChatThinking, int(time.Since(m.thinkStart).Seconds()))
-	if m.turnTokens > 0 {
-		line += " · ↓" + shortTokens(m.turnTokens)
-	}
+	line += m.thinkingCharsSuffix()
 	return yellow(line)
 }
 
 // thoughtSummaryLine renders the collapsed marker after thinking closes: the
 // star frozen on its first frame (compact) or the "▎" rule (expanded), the
-// elapsed time, and the final output token count when available. The compact
+// elapsed time, and the final streamed character count. The compact
 // summary keeps the thinking yellow so the marker colour is stable across the
 // stream→commit transition.
 func (m *chatTUI) thoughtSummaryLine(secs int) string {
@@ -2849,9 +2872,7 @@ func (m *chatTUI) thoughtSummaryLine(secs int) string {
 		style = yellow
 	}
 	line := fmt.Sprintf(prefix+i18n.M.ChatThoughtForFmt, secs)
-	if m.turnTokens > 0 {
-		line += " · ↓" + shortTokens(m.turnTokens)
-	}
+	line += m.thinkingCharsSuffix()
 	return style(line)
 }
 
@@ -4084,6 +4105,7 @@ func (m *chatTUI) startControllerTurn(displayed, restore string, start func()) t
 	m.runStart = time.Now()
 	m.elapsed = 0
 	m.turnTokens = 0
+	m.thinkChars = 0
 	// The controller owns the run goroutine, its context, and cancellation; it
 	// streams events to eventCh and emits TurnDone when the turn settles.
 	m.noteWatchdogRunning()
@@ -4179,6 +4201,7 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 			m.commitSpacer()
 			m.thinkStart = time.Now()
 			m.reasoningLineIdx = len(m.transcript)
+			m.thinkChars = 0
 			m.commitLine(m.thinkingMarkerLine())
 			if !m.compactThinking() {
 				m.reasoningTextIdx = len(m.transcript)

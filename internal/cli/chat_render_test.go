@@ -130,15 +130,16 @@ func TestThinkingCompactStarMarker(t *testing.T) {
 		t.Fatalf("compact thinking must not stream the text, transcript=%v", m.transcript)
 	}
 
-	// Backdate the think start and add tokens, then tick: the marker must pick
-	// up the elapsed seconds, the token count, and a later star frame.
+	// Backdate the think start and add streamed characters, then tick: the
+	// marker must pick up the elapsed seconds, the character count, and a later
+	// star frame.
 	m.thinkStart = time.Now().Add(-3 * time.Second)
-	m.turnTokens = 1_500
+	m.thinkChars = 1_500
 	m.tickThinking()
 	m.tickThinking()
 	plain = ansi.Strip(m.transcript[0])
-	if !strings.Contains(plain, "3s") || !strings.Contains(plain, "↓1.5K") {
-		t.Errorf("compact marker should carry elapsed seconds and tokens: %q", plain)
+	if !strings.Contains(plain, "3s") || !strings.Contains(plain, "¶1.5K") {
+		t.Errorf("compact marker should carry elapsed seconds and streamed characters: %q", plain)
 	}
 	if !strings.ContainsAny(plain, "✸✹✺✷") {
 		t.Errorf("marker frame should advance after ticks: %q", plain)
@@ -152,14 +153,67 @@ func TestThinkingCompactStarMarker(t *testing.T) {
 		t.Fatalf("compact thinking should collapse to summary + separator + answer, transcript=%v", m.transcript)
 	}
 	plain = ansi.Strip(m.transcript[0])
-	if !strings.Contains(plain, "✶ thought for 3s") || !strings.Contains(plain, "↓1.5K") {
-		t.Errorf("collapsed marker should freeze the star + duration + tokens: %q", plain)
+	if !strings.Contains(plain, "✶ thought for 3s") || !strings.Contains(plain, "¶1.5K") {
+		t.Errorf("collapsed marker should freeze the star + duration + characters: %q", plain)
 	}
 	if !strings.Contains(m.transcript[0], "\033[38;5;179m") {
 		t.Errorf("collapsed compact marker should keep the thinking yellow: %q", m.transcript[0])
 	}
 	if strings.Contains(strings.Join(m.transcript, "\n"), "hidden reasoning") {
 		t.Fatalf("compact thinking text must stay hidden after commit, transcript=%v", m.transcript)
+	}
+}
+
+// TestThinkingMarkerCountsStreamedChars proves the thinking marker's "¶N"
+// readout tracks the live reasoning stream's character count — not Usage-event
+// tokens (which providers only emit after the request finishes) — and resets
+// between think rounds.
+func TestThinkingMarkerCountsStreamedChars(t *testing.T) {
+	m := newTestChatTUI()
+	m.thinkingCompact = true
+
+	// An unrelated Usage event (e.g. the planner model) must not leak into the
+	// marker: the readout is fed by the streamed text alone.
+	m.ingestEvent(event.Event{Kind: event.Usage, Usage: &provider.Usage{CompletionTokens: 2_800}})
+
+	m.ingestEvent(event.Event{Kind: event.Reasoning, Text: "deep"})
+	plain := ansi.Strip(m.transcript[0])
+	if !strings.Contains(plain, "¶4") {
+		t.Fatalf("marker should count streamed characters (4 runes) live: %q", plain)
+	}
+	if strings.Contains(plain, "↓") || strings.Contains(plain, "2.8K") {
+		t.Fatalf("marker must not show Usage-event tokens: %q", plain)
+	}
+
+	m.ingestEvent(event.Event{Kind: event.Reasoning, Text: "思考细节"})
+	plain = ansi.Strip(m.transcript[0])
+	if !strings.Contains(plain, "¶8") { // 4 ASCII + 4 CJK runes
+		t.Errorf("marker should accumulate runes across chunks: %q", plain)
+	}
+
+	m.ingestEvent(event.Event{Kind: event.Text, Text: "answer"}) // commit
+	if len(m.transcript) != 3 {
+		t.Fatalf("compact thinking should collapse to summary + separator + answer, transcript=%v", m.transcript)
+	}
+	if plain := ansi.Strip(m.transcript[0]); !strings.Contains(plain, "thought for") || !strings.Contains(plain, "¶8") {
+		t.Errorf("collapsed summary should freeze the final character count: %q", ansi.Strip(m.transcript[0]))
+	}
+
+	// The next think round starts fresh: the count must not carry over.
+	m.ingestEvent(event.Event{Kind: event.Reasoning, Text: "x"})
+	plain = ansi.Strip(m.transcript[len(m.transcript)-1])
+	if !strings.Contains(plain, "¶1") {
+		t.Errorf("a new think round should reset the marker count: %q", plain)
+	}
+
+	// Expanded (non-compact) thinking: the ▎ marker carries the same readout.
+	m2 := newTestChatTUI()
+	m2.ingestEvent(event.Event{Kind: event.Reasoning, Text: "展开思考"})
+	if len(m2.transcript) != 2 {
+		t.Fatalf("expanded thinking should open marker + text block, transcript=%v", m2.transcript)
+	}
+	if plain := ansi.Strip(m2.transcript[0]); !strings.Contains(plain, "▎") || !strings.Contains(plain, "¶4") {
+		t.Errorf("expanded marker should show the streamed character count: %q", plain)
 	}
 }
 
