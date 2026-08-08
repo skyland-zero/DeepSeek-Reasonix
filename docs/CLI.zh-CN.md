@@ -347,9 +347,13 @@ reasonix -p "同时更新两个项目" \
 时，这个位置会切换。窄终端会移动或压缩完整信息组，不会从中间截断标签。可见标签和工作
 模式值会跟随 `/language`。
 
-使用 `/theme auto|light|dark` 选择终端背景模式，也可以从 `/theme` 列出的命名配色中选择
-强调色。输入框上下边线、插入光标、选区、滚动条和底栏都会使用当前 CLI 主题。Transcript
-导航、多行输入、rewind 和剪贴板操作见[快捷键](./GUIDE.zh-CN.md#快捷键)。
+使用 `/theme auto|light|dark` 选择终端背景模式，也可以从 `/theme` 列出的命名配色中选择。
+强调色风格（graphite、ember、aurora、midnight、sandstone、porcelain、linen、glacier、
+deepseek）只染色当前模式的基础调色板；完整调色板主题（dracula、gruvbox-*、catppuccin-*、
+nord、solarized-*、onedark、monokai、base16-snazzy、tokyonight-*、rose-pine-*、
+kanagawa-wave、github）会重染所有配色槽，代码和 diff 高亮也会跟随当前主题。输入框上下边线、
+插入光标、选区、滚动条和底栏都会使用当前 CLI 主题。Transcript 导航、多行输入、rewind 和
+剪贴板操作见[快捷键](./GUIDE.zh-CN.md#快捷键)。
 
 剪贴板操作按内容类型明确分开。本地 transcript 和输入框选区写入系统剪贴板，并且只有写入
 成功后才提示完成；SSH 会回退到明确标记的 OSC 52 请求。文本粘贴继续走终端的

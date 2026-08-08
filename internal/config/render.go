@@ -67,7 +67,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if style := c.UIThemeStyle(); style != "" {
 			fmt.Fprintf(&b, "theme_style = %q   # CLI accent palette; REASONIX_THEME_STYLE can override per run\n", style)
 		} else {
-			b.WriteString("# theme_style = \"graphite\"   # graphite|aurora|slate|carbon|nocturne|amber and legacy aliases\n")
+			b.WriteString("# theme_style = \"graphite\"   # accent styles: graphite|ember|aurora|midnight|sandstone|porcelain|linen|glacier|deepseek; full palettes: dracula|gruvbox-*|catppuccin-*|nord|solarized-*|onedark|monokai|base16-snazzy|tokyonight-*|rose-pine-*|kanagawa-wave|github\n")
 		}
 		if layout := c.UIShortcutLayout(); layout != "classic" {
 			fmt.Fprintf(&b, "shortcut_layout = %q   # classic|desktop; compatibility setting; Shift+Tab toggles Plan, Ctrl+Y toggles YOLO\n", layout)

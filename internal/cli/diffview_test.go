@@ -46,6 +46,35 @@ func TestDiffBodyNoFoldWhenShort(t *testing.T) {
 	}
 }
 
+func TestHighlightCodeFollowsThemeSyntaxStyle(t *testing.T) {
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.ANSI256
+
+	code := "package main\nfunc main() {}\n"
+	configureCLIThemeWithStyle("dark", "graphite")
+	base := highlightCode("x.go", code)
+	if !strings.Contains(base, "\x1b[38;5;") {
+		t.Fatalf("expected ANSI-highlighted base output, got %q", base)
+	}
+
+	configureCLIThemeWithStyle("dark", "dracula")
+	got := highlightCode("x.go", code)
+	if got == base {
+		t.Fatal("switching to a full palette theme should change syntax highlighting")
+	}
+	if !strings.Contains(got, "\x1b[38;5;") {
+		t.Fatalf("dracula highlighting missing ANSI colors, got %q", got)
+	}
+
+	// Accent-only styles keep the mode default so existing output never shifts.
+	configureCLIThemeWithStyle("dark", "aurora")
+	if again := highlightCode("x.go", code); again != base {
+		t.Fatal("accent-only styles must not change syntax highlighting")
+	}
+}
+
 func TestDiffBlockHeader(t *testing.T) {
 	d := event.FileDiff{Diff: "@@ -1 +1 @@\n-a\n+b\n", Added: 1, Removed: 1}
 	block := diffBlock("edit_file", `{"path":"pkg/x.go"}`, d, 80, 40)

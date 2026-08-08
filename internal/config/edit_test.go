@@ -73,7 +73,7 @@ func TestUIThemeStyleNormalizes(t *testing.T) {
 		{"", ""},
 		{"AURORA", "aurora"},
 		{" nocturne ", "nocturne"},
-		{" glacier ", "glacier"},
+		{" glacier ", "glacier"}, {"dracula", "dracula"}, {"catppuccin-latte", "catppuccin-latte"},
 		{"unknown", ""},
 	} {
 		c.UI.ThemeStyle = tt.in

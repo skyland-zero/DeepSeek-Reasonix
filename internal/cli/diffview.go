@@ -251,11 +251,7 @@ func highlightCode(path, code string) string {
 		return code
 	}
 	var b strings.Builder
-	styleName := "github-dark"
-	if activeCLITheme.name == "light" {
-		styleName = "github"
-	}
-	style := styles.Get(styleName)
+	style := styles.Get(themeSyntaxStyle())
 	if diffChromaFmt.Format(&b, style, it) != nil {
 		return code
 	}
@@ -276,13 +272,21 @@ func highlightCodeByLang(lang, code string) string {
 		return code
 	}
 	var b strings.Builder
-	styleName := "github-dark"
-	if activeCLITheme.name == "light" {
-		styleName = "github"
-	}
-	style := styles.Get(styleName)
+	style := styles.Get(themeSyntaxStyle())
 	if diffChromaFmt.Format(&b, style, it) != nil {
 		return code
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// themeSyntaxStyle resolves the chroma style bound to the active theme. The
+// accent-only styles inherit the mode defaults so their output never changes.
+func themeSyntaxStyle() string {
+	if name := activeCLITheme.syntaxStyle; name != "" {
+		return name
+	}
+	if activeCLITheme.name == "light" {
+		return "github"
+	}
+	return "github-dark"
 }

@@ -394,8 +394,13 @@ other interaction needs attention. Narrow terminals move or compact complete
 groups instead of cutting labels in half. Visible labels and work-mode values
 follow `/language`.
 
-Use `/theme auto|light|dark` to select the terminal background mode, or choose a
-named accent from `/theme`. Both composer borders, the insertion cursor,
+Use `/theme auto|light|dark` to select the terminal background mode, or pick a
+named palette from `/theme`. Accent styles (graphite, ember, aurora, midnight,
+sandstone, porcelain, linen, glacier, deepseek) tint the active mode's base
+palette; full-palette themes (dracula, gruvbox-*, catppuccin-*, nord,
+solarized-*, onedark, monokai, base16-snazzy, tokyonight-*, rose-pine-*,
+kanagawa-wave, github) recolor every slot, and code and diff highlighting
+follows the active theme. Both composer borders, the insertion cursor,
 selection, scrollbar, and footer use the active CLI theme. See
 [Keyboard shortcuts](./GUIDE.md#keyboard-shortcuts) for transcript navigation,
 multiline input, rewind, and clipboard controls.

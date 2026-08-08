@@ -99,8 +99,52 @@ func TestThemeArgCompletion(t *testing.T) {
 	if !ok || len(items) == 0 {
 		t.Fatalf("/theme arg completion should offer themes, ok=%v n=%d", ok, len(items))
 	}
-	if !hasLabel(items, "auto") || !hasLabel(items, "graphite") || !hasLabel(items, "aurora") {
+	if !hasLabel(items, "auto") || !hasLabel(items, "graphite") || !hasLabel(items, "aurora") || !hasLabel(items, "dracula") || !hasLabel(items, "catppuccin-latte") {
 		t.Fatalf("/theme completion missing expected themes: %v", labels(items))
+	}
+}
+
+func TestFullPaletteThemeSwitchesEverySlot(t *testing.T) {
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.ANSI256
+
+	configureCLIThemeWithStyle("dark", "graphite")
+	before := activeCLITheme
+	configureCLIThemeWithStyle("dark", "dracula")
+	if activeCLITheme.name != "dark" || activeCLITheme.style != "dracula" {
+		t.Fatalf("theme = %s/%s, want dark/dracula", activeCLITheme.name, activeCLITheme.style)
+	}
+	if activeCLITheme.accent != (cliColor{"#bd93f9", 141}) {
+		t.Fatalf("dracula accent = %+v, want #bd93f9", activeCLITheme.accent)
+	}
+	if activeCLITheme.border == before.border || activeCLITheme.userBubbleBG == before.userBubbleBG {
+		t.Fatal("full palette must recolor border and bubble, not just the accent")
+	}
+	if activeCLITheme.userBubbleBG != (cliColor{"#343746", 237}) {
+		t.Fatalf("dracula bubble bg = %+v, want #343746", activeCLITheme.userBubbleBG)
+	}
+	if activeCLITheme.syntaxStyle != "dracula" {
+		t.Fatalf("syntax style = %q, want dracula", activeCLITheme.syntaxStyle)
+	}
+}
+
+func TestFullPaletteThemeCarriesItsMode(t *testing.T) {
+	t.Setenv("SKYCODE_THEME", "")
+	t.Setenv("SKYCODE_THEME_STYLE", "")
+	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
+	activeColorProfile = colorprofile.ANSI256
+
+	configureCLITheme("catppuccin-latte")
+	if activeCLITheme.name != "light" || activeCLITheme.style != "catppuccin-latte" {
+		t.Fatalf("theme = %s/%s, want light/catppuccin-latte", activeCLITheme.name, activeCLITheme.style)
+	}
+
+	// A full palette style must not leak into the other mode's base palette.
+	configureCLITheme("light")
+	if activeCLITheme.name != "light" || activeCLITheme.style != "sandstone" {
+		t.Fatalf("theme = %s/%s, want light/sandstone", activeCLITheme.name, activeCLITheme.style)
 	}
 }
 

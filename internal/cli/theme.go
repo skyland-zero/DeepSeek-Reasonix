@@ -27,6 +27,7 @@ type cliColor struct {
 type cliPalette struct {
 	name         string
 	style        string
+	syntaxStyle  string
 	accent       cliColor
 	muted        cliColor
 	faint        cliColor
@@ -49,6 +50,10 @@ type cliThemeStyle struct {
 	mode        string
 	accent      cliColor
 	description string
+	// palette carries a full-palette theme; nil keeps the legacy accent-only
+	// style that inherits every other slot from the mode base palette.
+	palette     *cliPalette
+	syntaxStyle string
 }
 
 var (
@@ -90,7 +95,7 @@ var (
 		toolRead:     cliColor{"#6f91d9", 68},
 		toolProc:     cliColor{"#8a6bb8", 97},
 	}
-	cliThemeStyles = []cliThemeStyle{
+	cliThemeStyles = append([]cliThemeStyle{
 		{name: "graphite", mode: "dark", accent: cliColor{"#d97757", 173}, description: "warm clay accent"},
 		{name: "ember", mode: "dark", accent: cliColor{"#f06d38", 209}, description: "hot orange accent"},
 		{name: "aurora", mode: "dark", accent: cliColor{"#34c3a6", 79}, description: "cool teal accent"},
@@ -100,7 +105,7 @@ var (
 		{name: "linen", mode: "light", accent: cliColor{"#bd5d4d", 167}, description: "muted coral light accent"},
 		{name: "glacier", mode: "light", accent: cliColor{"#357fa8", 74}, description: "cool blue light accent"},
 		{name: "deepseek", mode: "light", accent: cliColor{"#3964fe", 63}, description: "DeepSeek official blue light accent"},
-	}
+	}, cliFullPaletteStyles...)
 	activeCLITheme = applyCLIThemeStyle(cliDarkTheme, cliThemeStyles[0])
 	// activeBackgroundProbe stays inert unless a caller that owns stdin opts in
 	// through withTerminalProbe; terminalProbe is what opting in installs.
@@ -186,6 +191,9 @@ func buildCLITheme(mode, style string) cliPalette {
 }
 
 func applyCLIThemeStyle(base cliPalette, style cliThemeStyle) cliPalette {
+	if style.palette != nil {
+		return *style.palette
+	}
 	base.style = style.name
 	base.accent = style.accent
 	base.selection = style.accent
@@ -488,12 +496,18 @@ func (m *chatTUI) refreshRuntimeTheme() {
 func describeCLIThemes() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s  auto · light · dark\n", dim("modes:"))
-	for _, st := range cliThemeStyles {
-		marker := "  "
-		if st.name == activeCLITheme.style {
-			marker = accent("› ")
+	for _, mode := range []string{"dark", "light"} {
+		fmt.Fprintf(&b, "%s\n", dim(mode+":"))
+		for _, st := range cliThemeStyles {
+			if st.mode != mode {
+				continue
+			}
+			marker := "  "
+			if st.name == activeCLITheme.style {
+				marker = accent("› ")
+			}
+			fmt.Fprintf(&b, "%s%-16s %s\n", marker, st.name, dim(st.description))
 		}
-		fmt.Fprintf(&b, "%s%-10s %s  %s\n", marker, st.name, dim(st.mode), dim(st.description))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

@@ -574,7 +574,11 @@ default. Long drafts grow to the available maximum height; once they overflow,
 wheel events inside the composer scroll the draft without moving the insertion
 cursor, while wheel events in the transcript keep scrolling the conversation.
 Use `/theme auto|light|dark` to select the background mode, or `/theme <style>`
-to select one of the named accent palettes shown by bare `/theme`.
+to select one of the named palettes shown by bare `/theme`. Accent styles tint
+only the mode's base palette; full-palette themes (dracula, gruvbox-*,
+catppuccin-*, nord, solarized-*, onedark, monokai, base16-snazzy, tokyonight-*,
+rose-pine-*, kanagawa-wave, github) recolor the whole UI, and code and diff
+highlighting follows the active theme.
 
 The responsive footer keeps the active Ask/Auto/Plan or YOLO posture and current
 interaction state on the left. On wider terminals, model, effort, and work mode
@@ -616,7 +620,7 @@ Mode and display shortcuts:
 | `Ctrl+Y` | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. Terminals that forward Command/Super may also send `Cmd+Y`, but `Ctrl+Y` is the reliable terminal shortcut. |
 | `--yolo`, `--dangerously-skip-permissions` | Starts chat in YOLO | Same runtime mode as `Ctrl+Y`. |
 | `/work-mode [economy|balanced|delivery]` | Shows or switches the current session's work mode | `/profile` is a compatibility alias. Switching rebuilds the runtime atomically, preserves the conversation and approval posture, and is blocked while work is active. |
-| `/theme [auto|light|dark|style]` | Shows or switches the CLI theme | Bare `/theme` lists background modes and named accent palettes. The choice is saved to the user config; `REASONIX_THEME` and `REASONIX_THEME_STYLE` can override it for one run. |
+| `/theme [auto|light|dark|style]` | Shows or switches the CLI theme | Bare `/theme` lists background modes and named palettes (accent styles and full-palette themes such as dracula, gruvbox-*, catppuccin-*, nord, solarized-*, tokyonight-*, rose-pine-*; code and diff highlighting follows the theme). The choice is saved to the user config; `REASONIX_THEME` and `REASONIX_THEME_STYLE` can override it for one run. |
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
 | `Ctrl+B` | Expands or collapses long shell output | Long shell-output hint lines can also be clicked in the transcript; text selection is handled in-app while the full-screen TUI has mouse reporting enabled. |
 | `/goal <objective>`, `/goal --research <objective>`, `/goal --simple <objective>`, `/goal status`, `/goal clear` | Starts, checks, or clears Goal | Goal is not in any keyboard cycle; clearly long-horizon goals automatically enable AutoResearch after Goal is explicitly started. |

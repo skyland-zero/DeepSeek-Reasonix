@@ -232,7 +232,7 @@ const (
 // DesktopConfig so desktop preferences cannot alter terminal output or prompts.
 type UIConfig struct {
 	Theme           string `toml:"theme"`             // auto|dark|light; empty resolves to auto
-	ThemeStyle      string `toml:"theme_style"`       // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
+	ThemeStyle      string `toml:"theme_style"`       // accent styles: graphite|ember|aurora|midnight|sandstone|porcelain|linen|glacier|deepseek, full palettes: dracula|gruvbox-*|catppuccin-*|nord|solarized-*|onedark|monokai|base16-snazzy|tokyonight-*|rose-pine-*|kanagawa-wave|github
 	ShortcutLayout  string `toml:"shortcut_layout"`   // classic|desktop; accepted for compatibility
 	CloseBehavior   string `toml:"close_behavior"`    // legacy desktop close behavior; prefer desktop.close_behavior
 	ShowReasoning   bool   `toml:"show_reasoning"`    // Ctrl+O / /verbose: show thinking text in CLI; false = collapsed
@@ -260,7 +260,7 @@ type DesktopConfig struct {
 	Currency                string   `toml:"currency"`                   // user-global auto|CNY|USD pricing preference shared by desktop and CLI
 	LayoutStyle             string   `toml:"layout_style"`               // classic|workbench|creation; desktop layout style
 	Theme                   string   `toml:"theme"`                      // auto|dark|light; empty resolves to auto
-	ThemeStyle              string   `toml:"theme_style"`                // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
+	ThemeStyle              string   `toml:"theme_style"`                // accent styles: graphite|ember|aurora|midnight|sandstone|porcelain|linen|glacier|deepseek, full palettes: dracula|gruvbox-*|catppuccin-*|nord|solarized-*|onedark|monokai|base16-snazzy|tokyonight-*|rose-pine-*|kanagawa-wave|github
 	TerminalTheme           string   `toml:"terminal_theme"`             // auto|dark|light; auto follows the desktop app theme
 	ExternalOpener          string   `toml:"external_opener"`            // preferred installed app used by the desktop Open control
 	CloseBehavior           string   `toml:"close_behavior"`             // quit|background; desktop window close behavior
@@ -361,7 +361,7 @@ func (c *Config) UIThinkingMode() string {
 
 func normalizeThemeStyle(style string) string {
 	switch strings.ToLower(strings.TrimSpace(style)) {
-	case "graphite", "aurora", "slate", "carbon", "nocturne", "amber", "ember", "midnight", "sandstone", "porcelain", "linen", "glacier":
+	case "graphite", "aurora", "slate", "carbon", "nocturne", "amber", "ember", "midnight", "sandstone", "porcelain", "linen", "glacier", "dracula", "gruvbox-dark", "catppuccin-mocha", "catppuccin-macchiato", "catppuccin-frappe", "nord", "solarized-dark", "onedark", "monokai", "base16-snazzy", "tokyonight-night", "rose-pine-moon", "kanagawa-wave", "catppuccin-latte", "gruvbox-light", "solarized-light", "github", "tokyonight-day", "rose-pine-dawn":
 		return strings.ToLower(strings.TrimSpace(style))
 	default:
 		return ""

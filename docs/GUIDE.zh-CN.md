@@ -460,7 +460,10 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 输入框上下边线使用当前主题强调色，默认光标为细竖线。长草稿会增长到可用的最大高度；
 超过后，在输入框内滚轮只滚动草稿视图，不移动插入光标，在 transcript 区域滚轮仍滚动
 对话。使用 `/theme auto|light|dark` 选择背景模式，也可运行不带参数的 `/theme` 查看
-命名配色，再用 `/theme <style>` 选择强调色。
+命名配色，再用 `/theme <style>` 选择。强调色风格只染色当前模式的基础调色板；完整调色板
+主题（dracula、gruvbox-*、catppuccin-*、nord、solarized-*、onedark、monokai、
+base16-snazzy、tokyonight-*、rose-pine-*、kanagawa-wave、github）会重染整个界面，
+代码和 diff 高亮也会跟随当前主题。
 
 响应式底栏左侧保留当前 Ask/Auto/Plan 或 YOLO 姿态和交互状态；终端较宽时，模型、推理
 强度和工作模式作为一组靠右显示，第二行按可用性显示 Git 标识、缓存命中率、上下文占用、
@@ -500,7 +503,7 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 | `Ctrl+Y` | 切换 YOLO 开/关 | 关闭 YOLO 时会尽量恢复之前的 Ask/Auto 基底。终端若能转发 Command/Super，也可能识别 `Cmd+Y`，但稳定可用的是 `Ctrl+Y`。 |
 | `--yolo`、`--dangerously-skip-permissions` | 启动时进入 YOLO | 和 `Ctrl+Y` 是同一个运行时模式。 |
 | `/work-mode [economy|balanced|delivery]` | 查看或切换当前会话的工作模式 | `/profile` 是兼容别名。切换会原子重建运行时，保留对话和审批姿态；有工作正在进行时会拒绝切换。 |
-| `/theme [auto|light|dark|style]` | 查看或切换 CLI 主题 | 不带参数会列出背景模式和命名配色。选择会保存到用户配置；单次运行可用 `REASONIX_THEME` 和 `REASONIX_THEME_STYLE` 覆盖。 |
+| `/theme [auto|light|dark|style]` | 查看或切换 CLI 主题 | 不带参数会列出背景模式和命名配色（强调色风格与 dracula、gruvbox-*、catppuccin-*、nord、solarized-*、tokyonight-*、rose-pine-* 等完整调色板主题，代码和 diff 高亮跟随主题）。选择会保存到用户配置；单次运行可用 `REASONIX_THEME` 和 `REASONIX_THEME_STYLE` 覆盖。 |
 | `Ctrl+O` | 切换详细 reasoning 显示 | 也可通过 `/verbose` 使用。 |
 | `Ctrl+B` | 展开或收起较长 shell 输出 | 较长 shell 输出的提示行也可点击；全屏 TUI 开启鼠标接管时，文本选区由应用内处理。 |
 | `/goal <目标>`、`/goal --research <目标>`、`/goal --simple <目标>`、`/goal status`、`/goal clear` | 启动、查看或清除 Goal | Goal 不进入任何快捷键循环；显式启动 Goal 后，明显长周期目标会自动启用 AutoResearch。 |
