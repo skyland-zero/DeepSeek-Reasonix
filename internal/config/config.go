@@ -236,6 +236,7 @@ type UIConfig struct {
 	ShortcutLayout  string `toml:"shortcut_layout"`   // classic|desktop; accepted for compatibility
 	CloseBehavior   string `toml:"close_behavior"`    // legacy desktop close behavior; prefer desktop.close_behavior
 	ShowReasoning   bool   `toml:"show_reasoning"`    // Ctrl+O / /verbose: show thinking text in CLI; false = collapsed
+	ThinkingMode    string `toml:"thinking_mode"`     // compact|expanded thinking marker display; empty = compact
 	ShowTurnUsage   bool   `toml:"show_turn_usage"`   // show per-request token/cost receipts in the CLI/TUI transcript
 	ShowTurnReceipt bool   `toml:"show_turn_receipt"` // show per-turn token/cost receipt in transcript; false = hidden
 	CursorShape     string `toml:"cursor_shape"`      // block|underline|bar; empty defaults to bar
@@ -343,6 +344,18 @@ func (c *Config) UICursorShape() string {
 		return "underline"
 	default:
 		return "bar"
+	}
+}
+
+// UIThinkingMode normalizes ui.thinking_mode. compact hides the streamed
+// thinking text behind an animated star marker; expanded keeps the current
+// live tail-window view.
+func (c *Config) UIThinkingMode() string {
+	switch strings.ToLower(strings.TrimSpace(c.UI.ThinkingMode)) {
+	case "expanded":
+		return "expanded"
+	default:
+		return "compact"
 	}
 }
 

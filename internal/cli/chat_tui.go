@@ -170,6 +170,10 @@ type chatTUI struct {
 	// without a live transcript block, then appended once as a final summary.
 	reasoningNative bool
 	thinkStart      time.Time
+	// thinkingCompact is [ui] thinking_mode=compact: live thinking text is
+	// replaced by an animated star marker. thinkingFrame is its frame index.
+	thinkingCompact bool
+	thinkingFrame   int
 	// answerIdx is the transcript index of the streaming answer block (rewritten in
 	// place as completed paragraphs arrive); -1 when none is open. answerFlushed is
 	// how many bytes of pending have already been rendered into it, so a Text packet
@@ -2027,6 +2031,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)
+			m.tickThinking()
 		}
 	}
 
@@ -2318,6 +2323,10 @@ func (m chatTUI) renderTranscriptWithMainManager(card string) string {
 // delta O(1). The full text still lives in m.reasoning for verbose mode.
 const reasoningViewMax = 4096
 
+// thinkingStarFrames is the cli-spinners "star" animation: the star grows and
+// shrinks as the model thinks, cycled on the compact marker line.
+var thinkingStarFrames = []string{"✶", "✸", "✹", "✺", "✹", "✷"}
+
 // reasoningTailLines caps how many trailing visual lines the live block shows.
 const reasoningTailLines = 12
 
@@ -2329,18 +2338,34 @@ func (m *chatTUI) streamReasoning(chunk string) {
 	if m.reasoningTextIdx < 0 {
 		return
 	}
-	m.reasoningView = append(m.reasoningView, chunk...)
-	if len(m.reasoningView) > reasoningViewMax {
-		drop := len(m.reasoningView) - reasoningViewMax
-		for drop < len(m.reasoningView) && !utf8.RuneStart(m.reasoningView[drop]) {
-			drop++
-		}
-		m.reasoningView = m.reasoningView[:copy(m.reasoningView, m.reasoningView[drop:])]
+	m.reasoningView = reasoningViewAppend(m.reasoningView, chunk, reasoningViewMax)
+	m.renderReasoningView()
+}
+
+// renderReasoningView redraws the live reasoning text block from the bounded
+// trailing window. No-op when no text block is open (compact mode).
+func (m *chatTUI) renderReasoningView() {
+	if m.reasoningTextIdx < 0 {
+		return
 	}
 	raw := string(m.reasoningView)
 	m.setTranscriptBlock(m.reasoningTextIdx, reasoningBlock(raw, m.width, reasoningTailLines), transcriptSource{
 		kind: transcriptSourceReasoning, raw: raw, maxLines: reasoningTailLines,
 	})
+}
+
+// reasoningViewAppend adds chunk to the bounded trailing window, dropping the
+// oldest bytes (at a rune boundary) past max.
+func reasoningViewAppend(view []byte, chunk string, max int) []byte {
+	view = append(view, chunk...)
+	if len(view) > max {
+		drop := len(view) - max
+		for drop < len(view) && !utf8.RuneStart(view[drop]) {
+			drop++
+		}
+		view = view[:copy(view, view[drop:])]
+	}
+	return view
 }
 
 // toolStreamTailLines caps how many trailing output lines a running tool shows;
@@ -2775,6 +2800,57 @@ func (m *chatTUI) tickToolRunning() {
 	m.rewriteTranscriptBlock(m.toolStreamIdx, connectorBlock([]string{dim(fmt.Sprintf(i18n.M.ChatToolWorkingFmt, frame, secs))}))
 }
 
+// tickThinking advances the compact marker's star frame once per spinner tick
+// and rewrites the marker line in place with the frame, elapsed seconds, and
+// output tokens. No-op unless a compact thinking marker is live, so the
+// animation stops the moment thinking closes.
+func (m *chatTUI) tickThinking() {
+	if !m.thinkingCompact || m.reasoningLineIdx < 0 {
+		return
+	}
+	m.thinkingFrame++
+	m.setTranscriptBlock(m.reasoningLineIdx, m.thinkingMarkerLine(), transcriptSource{kind: transcriptSourceFixed})
+	m.transcriptDirty = true
+}
+
+// compactThinking reports whether the live thinking text block is replaced by
+// the star marker: [ui] thinking_mode=compact and verbose off.
+func (m *chatTUI) compactThinking() bool {
+	return m.thinkingCompact && !m.showReasoning
+}
+
+// thinkingMarkerLine renders the live thinking marker: the animated star frame
+// (compact) or the plain "▎ thinking…" rule (expanded), with the elapsed
+// seconds and the output token count once available. The compact marker is
+// warn-yellow — the thinking-activity colour Claude Code and opencode use —
+// so it stands out from dim tool/body text; it falls back to dim on commit.
+func (m *chatTUI) thinkingMarkerLine() string {
+	if !m.thinkingCompact {
+		return dim("  ▎ " + i18n.M.ChatThinking)
+	}
+	frame := thinkingStarFrames[m.thinkingFrame%len(thinkingStarFrames)]
+	line := fmt.Sprintf("  "+i18n.M.ChatThinkingLiveFmt, frame, i18n.M.ChatThinking, int(time.Since(m.thinkStart).Seconds()))
+	if m.turnTokens > 0 {
+		line += " · ↓" + shortTokens(m.turnTokens)
+	}
+	return yellow(line)
+}
+
+// thoughtSummaryLine renders the collapsed marker after thinking closes: the
+// star frozen on its first frame (compact) or the "▎" rule (expanded), the
+// elapsed time, and the final output token count when available.
+func (m *chatTUI) thoughtSummaryLine(secs int) string {
+	prefix := "  ▎ "
+	if m.thinkingCompact {
+		prefix = "  ✶ "
+	}
+	line := fmt.Sprintf(prefix+i18n.M.ChatThoughtForFmt, secs)
+	if m.turnTokens > 0 {
+		line += " · ↓" + shortTokens(m.turnTokens)
+	}
+	return dim(line)
+}
+
 // commitReasoning closes the live thinking block: the "▎ thinking…" marker is
 // rewritten to a dim "▎ thought for Ns" summary and the streamed text below it is
 // removed (collapsed) — kept only in verbose mode. The viewport re-wraps from
@@ -2799,7 +2875,7 @@ func (m *chatTUI) commitReasoning() {
 		return
 	}
 	secs := int(time.Since(m.thinkStart).Seconds())
-	m.setTranscriptBlock(m.reasoningLineIdx, dim(fmt.Sprintf("  ▎ "+i18n.M.ChatThoughtForFmt, secs)), transcriptSource{kind: transcriptSourceFixed})
+	m.setTranscriptBlock(m.reasoningLineIdx, m.thoughtSummaryLine(secs), transcriptSource{kind: transcriptSourceFixed})
 	if m.reasoningTextIdx >= 0 {
 		if m.showReasoning && strings.TrimSpace(m.reasoning.String()) != "" {
 			raw := m.reasoning.String()
@@ -3896,6 +3972,7 @@ func (m chatTUI) modeTagText() string {
 
 func (m *chatTUI) toggleVerboseReasoning(notify bool) {
 	m.showReasoning = !m.showReasoning
+	m.syncVerboseThinkingBlock()
 	var saveErr error
 	if m.cfg != nil {
 		_ = m.cfg.SetShowReasoning(m.showReasoning)
@@ -3918,6 +3995,27 @@ func (m *chatTUI) toggleVerboseReasoning(notify bool) {
 		m.notice("verbose on — thinking text will be shown" + suffix)
 	} else {
 		m.notice("verbose off — thinking text will stay collapsed" + suffix)
+	}
+}
+
+// syncVerboseThinkingBlock opens or removes the live reasoning text block when
+// verbose is toggled mid-think in compact mode, so the switch takes effect on
+// the current stream instead of waiting for the next reasoning block.
+func (m *chatTUI) syncVerboseThinkingBlock() {
+	if !m.thinkingCompact || m.reasoningLineIdx < 0 {
+		return
+	}
+	if m.showReasoning {
+		if m.reasoningTextIdx < 0 {
+			m.reasoningTextIdx = len(m.transcript)
+			m.commitLine("")
+		}
+		m.reasoningView = reasoningViewAppend(m.reasoningView[:0], m.reasoning.String(), reasoningViewMax)
+		m.renderReasoningView()
+	} else if m.reasoningTextIdx >= 0 {
+		m.removeTranscriptBlock(m.reasoningTextIdx)
+		m.reasoningTextIdx = -1
+		m.reasoningView = m.reasoningView[:0]
 	}
 }
 
@@ -4071,15 +4169,17 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 			break
 		}
 		if m.reasoningLineIdx < 0 {
-			// Show the marker plus a live text block the moment thinking starts; the
-			// text streams in below it and the block collapses to "thought for Ns"
-			// when it closes (kept expanded only in verbose mode).
+			// Show the marker plus a live text block the moment thinking starts;
+			// it collapses to "thought for Ns" when closed (kept only in verbose
+			// mode). Compact mode shows only the star marker and skips the block.
 			m.commitSpacer()
 			m.thinkStart = time.Now()
 			m.reasoningLineIdx = len(m.transcript)
-			m.commitLine(dim("  ▎ " + i18n.M.ChatThinking))
-			m.reasoningTextIdx = len(m.transcript)
-			m.commitLine("")
+			m.commitLine(m.thinkingMarkerLine())
+			if !m.compactThinking() {
+				m.reasoningTextIdx = len(m.transcript)
+				m.commitLine("")
+			}
 			m.reasoningView = m.reasoningView[:0]
 		}
 		m.streamReasoning(e.Text)

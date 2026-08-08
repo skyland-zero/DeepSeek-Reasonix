@@ -3,6 +3,7 @@ package cli
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	"github.com/charmbracelet/x/ansi"
@@ -97,6 +98,87 @@ func TestIngestSeparatesReasoningFromAnswer(t *testing.T) {
 	}
 	if plain := ansi.Strip(m.transcript[2]); !strings.HasPrefix(plain, "  Hello answer") {
 		t.Fatalf("answer should have an explicit assistant identity and indented body, got %q", plain)
+	}
+}
+
+// TestThinkingCompactStarMarker proves [ui] thinking_mode=compact replaces the
+// live thinking text block with an animated star marker: the marker carries the
+// star frame, elapsed seconds, and output tokens, and collapses to a frozen
+// "✶ thought for Ns" summary without any text block.
+func TestThinkingCompactStarMarker(t *testing.T) {
+	m := newTestChatTUI()
+	m.thinkingCompact = true
+
+	m.ingestEvent(event.Event{Kind: event.Reasoning, Text: "hidden reasoning"})
+	if len(m.transcript) != 1 {
+		t.Fatalf("compact thinking should open only the marker, transcript=%v", m.transcript)
+	}
+	plain := ansi.Strip(m.transcript[0])
+	if strings.Contains(plain, "▎") {
+		t.Errorf("compact marker must not carry the ▎ rule: %q", plain)
+	}
+	if !strings.Contains(plain, "✶") || !strings.Contains(plain, "thinking") {
+		t.Errorf("compact marker should start with the first star frame + label: %q", plain)
+	}
+	if strings.Contains(strings.Join(m.transcript, "\n"), "hidden reasoning") {
+		t.Fatalf("compact thinking must not stream the text, transcript=%v", m.transcript)
+	}
+
+	// Backdate the think start and add tokens, then tick: the marker must pick
+	// up the elapsed seconds, the token count, and a later star frame.
+	m.thinkStart = time.Now().Add(-3 * time.Second)
+	m.turnTokens = 1_500
+	m.tickThinking()
+	m.tickThinking()
+	plain = ansi.Strip(m.transcript[0])
+	if !strings.Contains(plain, "3s") || !strings.Contains(plain, "↓1.5K") {
+		t.Errorf("compact marker should carry elapsed seconds and tokens: %q", plain)
+	}
+	if !strings.ContainsAny(plain, "✸✹✺✷") {
+		t.Errorf("marker frame should advance after ticks: %q", plain)
+	}
+
+	m.ingestEvent(event.Event{Kind: event.Text, Text: "answer"}) // closes thinking
+	if len(m.transcript) != 3 {
+		t.Fatalf("compact thinking should collapse to summary + separator + answer, transcript=%v", m.transcript)
+	}
+	plain = ansi.Strip(m.transcript[0])
+	if !strings.Contains(plain, "✶ thought for 3s") || !strings.Contains(plain, "↓1.5K") {
+		t.Errorf("collapsed marker should freeze the star + duration + tokens: %q", plain)
+	}
+	if strings.Contains(strings.Join(m.transcript, "\n"), "hidden reasoning") {
+		t.Fatalf("compact thinking text must stay hidden after commit, transcript=%v", m.transcript)
+	}
+}
+
+// TestThinkingCompactVerboseToggle proves toggling verbose mid-think in compact
+// mode opens the live reasoning text block immediately (buffered content
+// included) and removes it again when verbose turns off.
+func TestThinkingCompactVerboseToggle(t *testing.T) {
+	m := newTestChatTUI()
+	m.thinkingCompact = true
+
+	m.ingestEvent(event.Event{Kind: event.Reasoning, Text: "secret plan"})
+	if len(m.transcript) != 1 {
+		t.Fatalf("compact thinking should open only the marker, transcript=%v", m.transcript)
+	}
+
+	m.toggleVerboseReasoning(false) // verbose on mid-think
+	if len(m.transcript) != 2 {
+		t.Fatalf("verbose should open the live text block, transcript=%v", m.transcript)
+	}
+	if !strings.Contains(ansi.Strip(m.transcript[1]), "secret plan") {
+		t.Errorf("verbose block should carry the buffered reasoning, transcript=%v", m.transcript)
+	}
+
+	m.ingestEvent(event.Event{Kind: event.Reasoning, Text: " more"})
+	if !strings.Contains(ansi.Strip(m.transcript[1]), "more") {
+		t.Errorf("verbose block should keep streaming, transcript=%v", m.transcript)
+	}
+
+	m.toggleVerboseReasoning(false) // verbose off mid-think
+	if len(m.transcript) != 1 {
+		t.Fatalf("verbose off should remove the text block, transcript=%v", m.transcript)
 	}
 }
 

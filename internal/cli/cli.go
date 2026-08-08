@@ -1262,7 +1262,8 @@ func chatREPL(args []string, version string) int {
 		m.outputStyle = cfg.Agent.OutputStyle    // shown as the active entry in /output-style
 		m.statuslineCmd = cfg.Statusline.Command // custom status-line command, "" = built-in row
 		m.showReasoning = cfg.UI.ShowReasoning   // /verbose persistence: start with config default
-		m.showTurnUsage = cfg.UI.ShowTurnUsage   // retain usage accounting even when transcript receipts are hidden
+		m.thinkingCompact = cfg.UIThinkingMode() == "compact"
+		m.showTurnUsage = cfg.UI.ShowTurnUsage // retain usage accounting even when transcript receipts are hidden
 		m.cfg = cfg
 	}
 

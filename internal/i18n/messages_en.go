@@ -30,6 +30,7 @@ var English = Messages{
 	ResumeRecoveryBadgeFmt: "[recovery copy · parent %s]",
 
 	ChatThinking:                           "thinking…",
+	ChatThinkingLiveFmt:                    "%s %s · %ds",
 	ChatThoughtForFmt:                      "thought for %ds",
 	ChatStatusThinkingFmt:                  "%s thinking… (%ds · Esc cancels)",
 	ChatToolWorkingFmt:                     "%s working · %ds",

@@ -31,6 +31,7 @@ var Chinese = Messages{
 	ResumeRecoveryBadgeFmt: "[冲突副本 · 父会话 %s]",
 
 	ChatThinking:                           "思考中…",
+	ChatThinkingLiveFmt:                    "%s %s · %d 秒",
 	ChatThoughtForFmt:                      "思考了 %d 秒",
 	ChatStatusThinkingFmt:                  "%s 思考中… (%d 秒 · Esc 取消)",
 	ChatToolWorkingFmt:                     "%s 运行中 · %d 秒",

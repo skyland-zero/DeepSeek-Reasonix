@@ -83,6 +83,26 @@ func TestUIThemeStyleNormalizes(t *testing.T) {
 	}
 }
 
+func TestUIThinkingModeNormalizes(t *testing.T) {
+	c := Default()
+	for _, tt := range []struct {
+		in   string
+		want string
+	}{
+		{"", "compact"},
+		{"compact", "compact"},
+		{" COMPACT ", "compact"},
+		{"expanded", "expanded"},
+		{"Expanded", "expanded"},
+		{"unknown", "compact"},
+	} {
+		c.UI.ThinkingMode = tt.in
+		if got := c.UIThinkingMode(); got != tt.want {
+			t.Errorf("UIThinkingMode(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestUICursorShapeNormalizes(t *testing.T) {
 	c := Default()
 	for _, tt := range []struct {
