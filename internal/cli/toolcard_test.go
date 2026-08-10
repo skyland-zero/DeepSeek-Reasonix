@@ -286,7 +286,7 @@ func TestFailedBashKeepsOutputPreview(t *testing.T) {
 	m := newTestChatTUI()
 	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "shell-test", Name: "bash", Args: `{"command":"go test"}`}})
 	m.ingestEvent(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "shell-test", Output: "ok pkg/a\n"}})
-	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "shell-test", Name: "bash", Err: "exit status 1"}})
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "shell-test", Name: "bash", Err: "exit status 1", Output: "ok pkg/a\n"}})
 
 	joined := strings.Join(m.transcript, "\n")
 	if strings.Count(joined, "Bash") != 1 {

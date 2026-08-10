@@ -129,7 +129,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if c.Desktop.ProviderAccess != nil {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}
-		fmt.Fprintf(&b, "expand_thinking = %v   # desktop: show reasoning text expanded by default; false = collapsed\n", c.Desktop.ExpandThinking)
+		renderDesktopReasoningDisplayMode(&b, c)
 		fmt.Fprintf(&b, "display_mode = %q   # desktop: standard|compact transcript display mode\n", c.DesktopDisplayMode())
 		if width := c.DesktopConversationWidth(); width == "full" {
 			fmt.Fprintf(&b, "conversation_width = %q   # desktop: standard|full transcript width; empty = standard\n", width)
@@ -228,9 +228,14 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# reasoning_language = \"zh\"   # visible reasoning language: auto|zh|en\n")
 	}
 	fmt.Fprintf(&b, "soft_compact_ratio  = %s   # notice only; keeps cache-first prefix intact\n", formatFloat(c.Agent.SoftCompactRatio))
-	fmt.Fprintf(&b, "tool_result_snip_ratio = %s   # snip stale tool results at this fraction before summary compaction\n", formatFloat(c.Agent.ToolResultSnipRatio))
+	fmt.Fprintf(&b, "tool_result_snip_ratio = %s   # at compact_ratio, dropping stale tool results replaces the summary if it gets under this\n", formatFloat(c.Agent.ToolResultSnipRatio))
 	fmt.Fprintf(&b, "compact_ratio       = %s   # try compacting when prompt reaches this fraction\n", formatFloat(c.Agent.CompactRatio))
 	fmt.Fprintf(&b, "compact_force_ratio = %s   # force compacting at this high-water mark\n", formatFloat(c.Agent.CompactForceRatio))
+	if strings.TrimSpace(c.Agent.ContextEditing) == "native" {
+		b.WriteString("context_editing     = \"native\"   # opt in to official Anthropic native tool clearing\n")
+	} else {
+		b.WriteString("# context_editing     = \"native\"   # opt in only for official Anthropic native tool clearing; default is local\n")
+	}
 	if c.Agent.Keep != nil {
 		fmt.Fprintf(&b, "keep                = %s   # compaction keep policy: errors, user_marked\n", renderStringArray(c.Agent.Keep))
 	} else {
@@ -370,7 +375,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				fmt.Fprintf(&b, "web_search  = %t   # provider-executed web_search tool; omitted defaults on for supported official DeepSeek APIs\n", *p.WebSearch)
 			}
 			if p.ReasoningProtocol != "" {
-				fmt.Fprintf(&b, "reasoning_protocol = %q   # auto|deepseek|glm|openai|none; overrides model/endpoint reasoning detection\n", p.ReasoningProtocol)
+				fmt.Fprintf(&b, "reasoning_protocol = %q   # auto|deepseek|glm|kimi-k3|openai|none; overrides model/endpoint reasoning detection\n", p.ReasoningProtocol)
 			}
 			if len(p.SupportedEfforts) > 0 {
 				fmt.Fprintf(&b, "supported_efforts = %s   # custom /effort levels exposed by this provider; overrides the built-in Kind/BaseURL default\n", renderStringArray(p.SupportedEfforts))
@@ -432,6 +437,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "excluded_paths = %s   # skill roots hidden from discovery\n", renderStringArray(c.Skills.ExcludedPaths))
 	} else {
 		b.WriteString("# excluded_paths = [\"~/.agents/skills\"]   # hide convention roots without deleting folders\n")
+	}
+	if c.Skills.DisableImplicitInvocation {
+		b.WriteString("disable_implicit_invocation = true   # keep /skill explicit; hide skill discovery and tools from the model\n")
+	} else {
+		b.WriteString("# disable_implicit_invocation = false   # keep skills available for automatic model invocation\n")
 	}
 	if c.Skills.MaxDepth != 0 {
 		fmt.Fprintf(&b, "max_depth = %d   # nested scan depth; default 3, set 1 for legacy root-only discovery\n", c.SkillMaxDepth())
@@ -776,9 +786,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				b.WriteString("# Raw MCP tool names with per-tool call timeouts.\n")
 				fmt.Fprintf(&b, "tool_timeout_seconds = %s\n", renderIntMap(pl.ToolTimeoutSeconds))
 			}
-			if pl.AutoStart != nil {
-				fmt.Fprintf(&b, "auto_start = %v\n", *pl.AutoStart)
-			}
+			renderPluginPolicy(&b, pl)
 		}
 	}
 
@@ -937,6 +945,12 @@ func RenderTOMLProjectDelta(c *Config) string {
 	if c.Agent.CompactForceRatio != d.Agent.CompactForceRatio {
 		fmt.Fprintf(&agentBuf, "compact_force_ratio = %s\n", formatFloat(c.Agent.CompactForceRatio))
 		anyAgent = true
+	}
+	if c.Agent.ContextEditing != d.Agent.ContextEditing {
+		if strings.TrimSpace(c.Agent.ContextEditing) == "native" {
+			fmt.Fprintf(&agentBuf, "context_editing = %q\n", "native")
+			anyAgent = true
+		}
 	}
 	if c.Agent.Keep != nil && !reflect.DeepEqual(c.Agent.Keep, d.Agent.Keep) {
 		fmt.Fprintf(&agentBuf, "keep = %s\n", renderStringArray(c.Agent.Keep))
@@ -1133,18 +1147,25 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 
 	// [skills]
-	if !reflect.DeepEqual(c.Skills, d.Skills) {
+	if !reflect.DeepEqual(c.Skills, d.Skills) || len(c.explicitProjectSkillKeys) > 0 {
 		b.WriteString("[skills]\n")
-		if len(c.Skills.Paths) > 0 {
+		if len(c.Skills.Paths) > 0 || c.keepsProjectSkillKey("paths") {
 			fmt.Fprintf(&b, "paths = %s\n", renderStringArray(c.Skills.Paths))
 		}
-		if len(c.Skills.ExcludedPaths) > 0 {
+		if len(c.Skills.ExcludedPaths) > 0 || c.keepsProjectSkillKey("excluded_paths") {
 			fmt.Fprintf(&b, "excluded_paths = %s\n", renderStringArray(c.Skills.ExcludedPaths))
 		}
-		if c.Skills.MaxDepth != 0 {
-			fmt.Fprintf(&b, "max_depth = %d\n", c.SkillMaxDepth())
+		if c.Skills.DisableImplicitInvocation || c.keepsProjectSkillKey("disable_implicit_invocation") {
+			fmt.Fprintf(&b, "disable_implicit_invocation = %t\n", c.Skills.DisableImplicitInvocation)
 		}
-		if disabled := c.DisabledSkillNames(); len(disabled) > 0 {
+		if c.Skills.MaxDepth != 0 || c.keepsProjectSkillKey("max_depth") {
+			depth := c.Skills.MaxDepth
+			if depth != 0 {
+				depth = c.SkillMaxDepth()
+			}
+			fmt.Fprintf(&b, "max_depth = %d\n", depth)
+		}
+		if disabled := c.DisabledSkillNames(); len(disabled) > 0 || c.keepsProjectSkillKey("disabled_skills") {
 			fmt.Fprintf(&b, "disabled_skills = %s\n\n", renderStringArray(disabled))
 		}
 	}
@@ -1241,9 +1262,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 			b.WriteString("# Raw MCP tool names with per-tool call timeouts.\n")
 			fmt.Fprintf(&b, "tool_timeout_seconds = %s\n", renderIntMap(pl.ToolTimeoutSeconds))
 		}
-		if pl.AutoStart != nil {
-			fmt.Fprintf(&b, "auto_start = %v\n", *pl.AutoStart)
-		}
+		renderPluginPolicy(&b, pl)
 		b.WriteString("\n")
 	}
 

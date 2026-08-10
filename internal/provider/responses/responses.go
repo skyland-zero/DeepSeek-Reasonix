@@ -140,6 +140,10 @@ func New(cfg Config) provider.Provider {
 		sessionCache = *cfg.SessionCache
 	}
 	vision, _ := cfg.Extra["vision"].(bool)
+	// DeepSeek's official Responses endpoint is currently text-only. Keep this
+	// provider-boundary guard so stale config or extension metadata cannot emit
+	// unsupported input_image items.
+	vision = vision && vendor != "deepseek"
 	httpClient := &http.Client{Timeout: 300 * time.Second}
 	if built, err := netclient.NewHTTPClient(cfg.Proxy, netclient.TransportOptions{
 		DialTimeout: 30 * time.Second, KeepAlive: 30 * time.Second,
@@ -344,7 +348,7 @@ func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, [
 		return body, true, messages
 	}
 
-	body["input"] = messagesToInput(rest, c.vision, c.vendor == "deepseek", c.caps.summaryRequired)
+	body["input"] = messagesToInput(rest, c.vision, c.webSearch, c.caps.summaryRequired)
 	return body, false, messages
 }
 
@@ -355,7 +359,7 @@ func splitInstructions(messages []provider.Message) (string, []provider.Message)
 	return messages[0].Content, messages[1:]
 }
 
-func messagesToInput(messages []provider.Message, vision, replayDeepSeekItems, summary bool) []map[string]any {
+func messagesToInput(messages []provider.Message, vision, replayWebSearchItems, summary bool) []map[string]any {
 	input := make([]map[string]any, 0, len(messages)*2)
 	for _, message := range messages {
 		switch message.Role {
@@ -405,7 +409,7 @@ func messagesToInput(messages []provider.Message, vision, replayDeepSeekItems, s
 				}
 				input = append(input, item)
 			}
-			if replayDeepSeekItems {
+			if replayWebSearchItems {
 				for _, raw := range message.ResponsesItems {
 					if item, ok := decodeReplayableWebSearchItem(raw); ok {
 						input = append(input, item)
@@ -455,7 +459,7 @@ func (c *client) conversationDigest(messages []provider.Message) string {
 	payload, _ := json.Marshal(struct {
 		Instructions string           `json:"instructions,omitempty"`
 		Input        []map[string]any `json:"input"`
-	}{Instructions: instructions, Input: messagesToInput(rest, c.vision, c.vendor == "deepseek", c.caps.summaryRequired)})
+	}{Instructions: instructions, Input: messagesToInput(rest, c.vision, c.webSearch, c.caps.summaryRequired)})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }
@@ -614,7 +618,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				}
 			}
 		case "response.output_item.done":
-			if event.Item != nil && event.Item.Type == "web_search_call" && c.vendor == "deepseek" {
+			if event.Item != nil && event.Item.Type == "web_search_call" && c.webSearch {
 				if _, ok := decodeReplayableWebSearchItem(event.Item.Raw); ok {
 					key := event.Item.ID
 					if key == "" {

@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +18,7 @@ import (
 	"reasonix/internal/ablation"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
+	"reasonix/internal/tool"
 )
 
 // Compaction is a low-frequency cache-reset point: the prompt grows append-only
@@ -34,8 +38,13 @@ const (
 	fallbackTokPerChar         = 0.25  // ~4 chars/token, used before any usage is available to calibrate
 	maxPinnedFirstUserTokens   = 1500  // ceiling on pinning the first user turn verbatim; larger first turns (pasted content) stay foldable
 	pinnedFirstUserWindowFrac  = 0.15  // and never pin a first turn worth more than this fraction of the window
-	maxKeepSmallUserTurns      = 20    // position-fixed keep window for small user turns in the fold region; the first N survive verbatim, older ones fold (prefix byte-stable, never "latest N")
+	maxCarriedDigestTokens     = 12000 // ceiling on digests carried verbatim across folds before one consolidating fold merges them
+	maxEarlyUserTurns          = 3     // small user turns hoisted verbatim ahead of the digest; position-fixed (the first N of the fold region, never "the latest N") so the projection prefix stays byte-stable
+	protocolReserveTokens      = 256   // provider framing and control fields not represented by message estimates
+	maxOutputReserveRatio      = 0.25  // ceiling on the window share an output budget may reserve before the thresholds collapse
 )
+
+var errSummaryOutputTruncated = errors.New("summarizer output truncated")
 
 // summaryTag wraps the compaction summary so the model can distinguish it from
 // live user input and later strip or skip it when reasoning about the current turn.
@@ -81,95 +90,74 @@ What is still in progress or unstarted, and the single most concrete next action
 
 Rules: be terse — bullet points and fragments, not prose. Preserve identifiers, paths, and numbers exactly. Do NOT invent anything not present in the messages; if something is unknown, leave it out rather than guessing.`
 
-// compactThresholds returns the prompt-token boundaries maybeCompact switches
-// on. The compaction ablation arm collapses the snip and fold triggers onto
-// soft, so the cache-preserving deferral branch is unreachable and the session
-// folds as soon as it grows — what a harness with no prompt-cache strategy does.
+// compactThresholds returns the prompt-token boundaries ContextManager switches
+// on. Only high triggers maintenance: soft is a notice, and snip is how far a
+// tool-result pass must bring the prompt down to stand in for the summary. The
+// compaction ablation arm folds at soft instead, which is what a harness with
+// no prompt-cache strategy does.
 func (a *Agent) compactThresholds() (soft, snip, high int) {
+	hard := a.hardInputCeiling()
 	high = int(float64(a.contextWindow) * a.compactRatio)
-	snip = int(float64(a.contextWindow) * a.toolResultSnipRatio)
-	soft = int(float64(a.contextWindow) * a.softCompactRatio)
+	// Ratios >= 1 are the documented test/config escape hatch for disabling
+	// automatic compaction; do not turn that into an immediate hard-trigger by
+	// clamping it down to the output-budget ceiling.
+	if a.compactRatio < 1 {
+		high = minInt(high, hard)
+	}
+	snip = minInt(int(float64(a.contextWindow)*a.toolResultSnipRatio), high)
+	soft = minInt(int(float64(a.contextWindow)*a.softCompactRatio), high)
 	if a.ablation.Off(ablation.Compaction) {
 		high, snip = soft, soft
 	}
 	return soft, snip, high
 }
 
-// maybeCompact compacts into a context projection when the last turn's prompt
-// has grown to the configured fraction of the context window. It never rewrites
-// the canonical transcript. No-op when compaction is disabled or usage is
-// unavailable.
-func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
-	if a.contextWindow <= 0 || u == nil || u.PromptTokens == 0 {
-		return
+// hardInputCeiling leaves room for the configured output and protocol framing.
+// A zero output budget means the provider's input window is the only declared
+// limit, preserving the historical behavior for providers that manage output
+// tokens themselves.
+func (a *Agent) hardInputCeiling() int {
+	if a == nil || a.contextWindow <= 0 {
+		return 0
 	}
-	soft, snip, high := a.compactThresholds()
-	// A turn that sits under the trigger is the breathing room a healthy
-	// compaction buys; it clears the stuck latch and the run counter. This has to
-	// happen before the soft/snip branches return, because a compaction that
-	// settles the prompt anywhere in [snip, high) is working exactly as intended:
-	// leaving a stale run count behind there would latch the *next* compaction as
-	// "the window is too small" and silently disable auto-compaction for the rest
-	// of the session.
-	if u.PromptTokens < high {
-		a.consecutiveCompacts = 0
-		a.compactStuck = false
+	hard := a.contextWindow
+	if outputBudget := a.reservedOutputTokens(); outputBudget > 0 {
+		hard -= outputBudget + protocolReserveTokens
 	}
-	// Between the soft ratio and the trigger, report growing context once without
-	// rewriting the prefix — a compaction here would needlessly crater the cache.
-	if u.PromptTokens >= soft && u.PromptTokens < snip && !a.softCompactNoticed {
-		a.softCompactNoticed = true
-		detail := fmt.Sprintf("context reached %.0f%% of window; keeping cache-first prefix until compact threshold %.0f%%", a.softCompactRatio*100, a.compactRatio*100)
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "Context is getting large; preserving cache until cleanup is needed.", Detail: detail})
-		return
+	return max(1, hard)
+}
+
+// reservedOutputTokens is the window share the thresholds hold back for the
+// reply. An output budget can exceed the configured window entirely (DeepSeek
+// defaults to 128K), which would drive every threshold to the one-token floor.
+// effectiveOutputBudget clips the actual reply at send time, so reserving more
+// than a quarter of the window buys nothing here.
+func (a *Agent) reservedOutputTokens() int {
+	budget := a.maxOutputTokens
+	if budget <= 0 && sharesContextWindow(a.prov) {
+		budget = a.outputBudget
 	}
-	if u.PromptTokens >= snip && u.PromptTokens < high {
-		// Snip only into a projection view — never rewrite the canonical log.
-		if err := a.snipToProjection(ctx); err != nil {
-			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "Context snip skipped for now.", Detail: err.Error()})
-		}
-		return
+	if budget <= 0 {
+		return 0
 	}
-	if u.PromptTokens < high {
-		return // the latch was already cleared above
+	return minInt(budget, int(float64(a.contextWindow)*maxOutputReserveRatio))
+}
+
+func (a *Agent) forceCompactThreshold(high int) int {
+	hard := a.hardInputCeiling()
+	force := minInt(int(float64(a.contextWindow)*a.compactForceRatio), hard)
+	return max(high, force)
+}
+
+// minimumMaintenanceSavingsTokens avoids cache-breaking projections that save
+// too little to matter. Small synthetic windows can never reach the production
+// floor; those are allowed through when they are already at the hard ceiling.
+func (a *Agent) minimumMaintenanceSavingsTokens() int {
+	if a == nil || a.contextWindow <= 0 {
+		return 0
 	}
-	if a.compactStuck {
-		return
-	}
-	force := u.PromptTokens >= int(float64(a.contextWindow)*a.compactForceRatio)
-	// Projection-only prune before folding. Install the pruned view first so the
-	// next request (and its real usage) can measure whether a paid summarize is
-	// still needed — never rewrite the canonical transcript.
-	ratio := a.tokPerChar()
-	msgs := a.session.Messages
-	pruned, pst := a.applyToolResultMaintenanceView(msgs, toolResultPrune)
-	if pst.Results > 0 {
-		saved := int(float64(pst.SavedChars) * ratio)
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
-			"pruned %d stale tool results (~%d tokens est.) before compaction", pst.Results, saved)})
-		_ = a.installPruneProjection(pruned, pst)
-		if !force {
-			// Defer summarization until a later turn still reports pressure under
-			// the pruned projection. Force-ratio turns still fold immediately.
-			return
-		}
-	}
-	if _, err := a.compactToProjection(ctx, "auto", "", force); err != nil {
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "Context cleanup skipped for now.", Detail: fmt.Sprintf("compaction skipped: %v", err)})
-		return
-	}
-	// A healthy compaction drops the prompt under the trigger, so the next turn
-	// won't compact. Compacting on consecutive turns means the kept tail alone
-	// exceeds the trigger — the system prompt plus one verbatim turn is bigger than
-	// the window allows. Re-firing every turn is the loop users hit, so pause
-	// auto-compaction and say why, once.
-	a.consecutiveCompacts++
-	if a.consecutiveCompacts >= 2 {
-		a.compactStuck = true
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "Automatic context cleanup paused because the context window is too small.", Detail: fmt.Sprintf(
-			"context_window=%d is too small for compaction to help (the system prompt plus one turn already exceeds %.0f%% of it); raise context_window or shrink tool output. Auto-compaction paused until the prompt drops.",
-			a.contextWindow, a.compactRatio*100)})
-	}
+	n := int(float64(a.contextWindow) * 0.02)
+	return minInt(max(n, 4096), 20000)
 }
 
 // foldEconomics estimates whether compacting the given region saves enough
@@ -220,76 +208,57 @@ func estimateTextTokens(s string) int {
 	return byBytes
 }
 
-// SummarizeFrom replaces the messages from fromIdx onward with a single summary,
-// keeping everything before it verbatim ("summarize from here"). fromIdx is a turn
-// boundary (a user message), so the split never severs a tool_call/result pair —
-// those live within one turn. A no-op when the region is empty.
+// SummarizeFrom keeps the compatibility index contract while installing a
+// projection that compresses from that user-turn boundary onward.
 func (a *Agent) SummarizeFrom(ctx context.Context, fromIdx int) error {
-	msgs := a.session.Messages
-	if fromIdx < 0 || fromIdx >= len(msgs) {
-		return nil
-	}
-	region, localOnly := splitLocalOnlyMessages(msgs[fromIdx:])
-	if len(region) == 0 {
-		return nil
-	}
-	if a.archiveDir != "" {
-		_, _ = archiveMessages(a.archiveDir, region) // best-effort traceability
-	}
-	summary, _, err := a.summarize(ctx, region, "")
-	if err != nil {
-		return err
-	}
-	next := make([]provider.Message, 0, fromIdx+1+len(localOnly))
-	next = append(next, msgs[:fromIdx]...)
-	next = append(next, provider.Message{
-		Role:    provider.RoleUser,
-		Content: "Summary of the later conversation (compacted from here on):\n" + summary,
-	})
-	next = append(next, localOnly...)
-	a.session.Rewrite(next, "summarize_from")
-	// Explicit range rewrites change lineage; drop any prior projection.
-	a.InvalidateProjection()
-	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-		Text: fmt.Sprintf("summarized %d later messages → summary", len(region))})
-	return nil
+	return a.summarizeAtProjectionBoundary(ctx, fromIdx, "after")
 }
 
-// SummarizeUpTo replaces the messages before toIdx (after the system prompt) with
-// a single summary, keeping toIdx onward verbatim ("summarize up to here"). toIdx
-// is a turn boundary, so no tool pair is split. A no-op when the region is empty.
+// SummarizeUpTo keeps the compatibility index contract while installing a
+// projection that compresses everything before that user-turn boundary.
 func (a *Agent) SummarizeUpTo(ctx context.Context, toIdx int) error {
-	msgs := a.session.Messages
-	head := 0
-	if len(msgs) > 0 && msgs[0].Role == provider.RoleSystem {
-		head = 1
-	}
-	if toIdx <= head || toIdx > len(msgs) {
+	return a.summarizeAtProjectionBoundary(ctx, toIdx, "before")
+}
+
+func (a *Agent) summarizeAtProjectionBoundary(ctx context.Context, canonicalIndex int, direction string) error {
+	snap := a.snapshotExplicitCompression()
+	if canonicalIndex < 0 || canonicalIndex >= len(snap.canonical) {
 		return nil
 	}
-	region, localOnly := splitLocalOnlyMessages(msgs[head:toIdx])
-	if len(region) == 0 {
+	anchor := snap.canonical[canonicalIndex]
+	if !compressAnchorCandidate(anchor) {
 		return nil
 	}
-	if a.archiveDir != "" {
-		_, _ = archiveMessages(a.archiveDir, region)
+	visibleIndex := -1
+	for i, msg := range snap.visible {
+		if !compressAnchorCandidate(msg) {
+			continue
+		}
+		if anchor.CreatedAt != 0 && msg.CreatedAt == anchor.CreatedAt {
+			visibleIndex = i
+			break
+		}
+		if anchor.CreatedAt == 0 && UserMessageText(msg) == UserMessageText(anchor) {
+			if visibleIndex >= 0 {
+				return fmt.Errorf("summarize boundary is ambiguous in the current model context")
+			}
+			visibleIndex = i
+		}
 	}
-	summary, _, err := a.summarize(ctx, region, "")
+	if visibleIndex < 0 {
+		return fmt.Errorf("context compression unavailable: selected turn is no longer present in the model context")
+	}
+	result, err := a.compressVisibleRange(ctx, snap, CompactionTriggerManual, direction, visibleIndex, anchorPreview(UserMessageText(anchor)), "")
 	if err != nil {
 		return err
 	}
-	next := make([]provider.Message, 0, head+1+len(localOnly)+len(msgs)-toIdx)
-	next = append(next, msgs[:head]...)
-	next = append(next, provider.Message{
-		Role:    provider.RoleUser,
-		Content: "Summary of earlier conversation (compacted up to here):\n" + summary,
-	})
-	next = append(next, localOnly...)
-	next = append(next, msgs[toIdx:]...)
-	a.session.Rewrite(next, "summarize_up_to")
-	a.InvalidateProjection()
-	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-		Text: fmt.Sprintf("summarized %d earlier messages → summary", len(region))})
+	if result.Status != "ok" {
+		reason := strings.TrimSpace(result.Reason)
+		if reason == "" {
+			reason = "selected range did not reduce the model context"
+		}
+		return fmt.Errorf("context compression skipped: %s", reason)
+	}
 	return nil
 }
 
@@ -312,35 +281,17 @@ func (a *Agent) activeTurnStart(msgs []provider.Message) int {
 	return -1
 }
 
-// splitLocalOnlyMessages removes display-only interrupted output from the
-// summarizer/archive input while returning it in transcript order for durable
-// reattachment. Explicit range summaries are user-requested rewrites, but they
-// must not erase visible output or expose private partial reasoning to a model.
-func splitLocalOnlyMessages(msgs []provider.Message) (model, localOnly []provider.Message) {
-	for _, m := range msgs {
-		if m.LocalOnly {
-			localOnly = append(localOnly, m)
-			continue
-		}
-		model = append(model, m)
-	}
-	return model, localOnly
-}
-
 // isCompactionSummary reports whether m is a rolling summary from a prior fold.
 func isCompactionSummary(m provider.Message) bool {
 	return m.Role == provider.RoleUser &&
 		strings.HasPrefix(strings.TrimLeft(m.Content, "\n "), summaryTagOpen)
 }
 
-// pinnedPrefixLen counts the leading messages a fold keeps verbatim: the system
-// prompt, the first user turn (its task + stated facts/constraints) when it is
-// small enough to be a brief, and the NEWEST prior summary — so a fold never
-// summarizes the user's facts away. Older summaries are NOT pinned: they enter
-// the fold region and are merged into the next digest (A1 rolling merge), so a
-// long session cannot accumulate an unbounded chain of digests. Merging re-feeds
-// the old summary text into the summarizer, so the facts it captured survive in
-// the new digest instead of being silently dropped.
+// pinnedPrefixLen counts the leading messages a fold keeps verbatim ahead of
+// everything else: the system prompt and the first user turn (its task + stated
+// facts/constraints) when it is small enough to be a brief. Digests are never
+// pinned — any digest in the transcript enters the fold region and is merged
+// into the next one, so a session cannot accumulate a chain of them.
 func (a *Agent) pinnedPrefixLen(msgs []provider.Message) int {
 	i := 0
 	if i < len(msgs) && msgs[i].Role == provider.RoleSystem {
@@ -349,10 +300,6 @@ func (a *Agent) pinnedPrefixLen(msgs []provider.Message) int {
 	if i < len(msgs) && msgs[i].Role == provider.RoleUser && !isCompactionSummary(msgs[i]) && a.fixedPinnableUserTurn(msgs[i]) {
 		i++
 	}
-	// The entire summary run stays inside the fold region; partitionFold keeps
-	// the NEWEST summary verbatim and folds the older ones into the next digest
-	// (A1 rolling merge) — re-feeding their text through the summarizer so a
-	// long session cannot accumulate an unbounded chain of digests.
 	return i
 }
 
@@ -370,57 +317,6 @@ func (a *Agent) fixedPinnableUserTurn(m provider.Message) bool {
 		}
 	}
 	return int(float64(msgChars(m))*fallbackTokPerChar) <= budget
-}
-
-// partitionFold splits a compaction region into what is kept verbatim — small user
-// turns (a fact the user stated is never summarized away) — and the rest, which
-// folds. Order within each group is preserved.
-//
-// Prior digests inside the region are folded (not kept verbatim): the newest
-// digest is already pinned by pinnedPrefixLen outside the region, so any summary
-// seen here is an older one being merged into the next digest (A1 rolling merge).
-// Merging re-feeds the old summary text into the summarizer, preserving its facts.
-//
-// The small-turn keep window is position-fixed (only the first keepSmallUserTurns
-// small user turns in the region survive), never "the most recent N" — a dynamic
-// tail window would move with every compaction and rewrite the kept prefix,
-// cratering the server-side prefix cache (mental-seal: prefix stability is the
-// first principle). A fixed prefix window keeps the surviving bytes identical
-// across compactions; only the folded middle is replaced by a digest.
-func (a *Agent) partitionFold(region []provider.Message) (kept, fold []provider.Message) {
-	policyKeep := keepIndexes(region, a.keepPolicy)
-	keptSmallUserTurns := 0
-	// The NEWEST summary in the region (the last one in the contiguous summary
-	// run) is kept verbatim; older digests fold into the next digest (A1 rolling
-	// merge) and are re-fed through the summarizer, so the digest chain cannot
-	// accumulate unboundedly.
-	lastSummary := -1
-	for i, m := range region {
-		if isCompactionSummary(m) {
-			lastSummary = i
-		}
-	}
-	for i, m := range region {
-		keep := m.LocalOnly || policyKeep[i] || (isCompactionSummary(m) && i == lastSummary)
-		if !keep && m.Role == provider.RoleUser && !isCompactionSummary(m) && a.fixedPinnableUserTurn(m) {
-			// Position-fixed small-turn keep window: the first N small user turns
-			// in the region survive verbatim; older ones fold into the digest so
-			// a long session cannot accumulate unbounded verbatim user turns.
-			// N is fixed (not "latest N"), so the kept prefix stays byte-stable.
-			// Digests are excluded: they are governed by the A1 rolling merge
-			// (only the newest survives verbatim; older ones re-enter the fold).
-			if keptSmallUserTurns < maxKeepSmallUserTurns {
-				keep = true
-			}
-			keptSmallUserTurns++
-		}
-		if keep {
-			kept = append(kept, m)
-		} else {
-			fold = append(fold, m)
-		}
-	}
-	return kept, fold
 }
 
 func keepIndexes(region []provider.Message, policy KeepPolicy) []bool {
@@ -485,8 +381,27 @@ func isErrorMessage(m provider.Message) bool {
 	if m.Role != provider.RoleTool {
 		return false
 	}
+	if failedExecution(m.ToolExecution) {
+		return true
+	}
 	s := strings.TrimSpace(strings.ToLower(m.Content))
 	return strings.HasPrefix(s, "error:") || strings.HasPrefix(s, "blocked:")
+}
+
+// failedExecution reads the failure the host already recorded, rather than
+// guessing from the text. A `go test` run that reports FAIL exits non-zero
+// while its output starts with "=== RUN", which no prefix match can see.
+func failedExecution(ex *provider.ToolExecution) bool {
+	if ex == nil {
+		return false
+	}
+	if ex.State == tool.ShellStateFailed || ex.State == tool.ShellStateTimedOut {
+		return true
+	}
+	if ex.ExitCode != nil && *ex.ExitCode != 0 {
+		return true
+	}
+	return ex.Verification == tool.ShellVerificationFailed
 }
 
 func isUserMarked(m provider.Message) bool {
@@ -536,6 +451,19 @@ func (a *Agent) planCompaction(msgs []provider.Message, min int) (head, start in
 			budget = maxByWin
 		}
 		start = tailStart(msgs, head, budget, a.tokPerChar(), a.tailFloor())
+		// The calibrated character ratio is useful for cheap planning but can
+		// under-estimate CJK/code-heavy turns and leave the projection above its
+		// target. Re-measure the actual message estimate and move the boundary
+		// forward until the retained tail itself fits the budget.
+		for !a.strictAlternatingRoles && start < len(msgs)-a.tailFloor() && estimateMessagesTokens(provider.ModelMessages(msgs[start:])) > budget {
+			start++
+			// Never leave a tool result at the beginning of the retained tail;
+			// skip the remainder of that tool-result group so its assistant call
+			// is folded together with the result.
+			for start < len(msgs)-a.tailFloor() && msgs[start].Role == provider.RoleTool {
+				start++
+			}
+		}
 	} else {
 		// No window to budget against (manual /compact on an unconfigured
 		// provider): keep a fixed count of recent messages, aligned off any tool.
@@ -591,11 +519,9 @@ func tailStart(msgs []provider.Message, head, budgetTokens int, tokPerChar float
 // actually sent (the provider strips it). Falls back to ~4 chars/token before
 // any usage is known, and ignores absurd ratios.
 func (a *Agent) tokPerChar() float64 {
-	if u := a.lastUsage.Load(); u != nil && u.PromptTokens > 0 {
-		if c := charsOfMessages(a.session.Messages); c > 0 {
-			if r := float64(u.PromptTokens) / float64(c); r > 0.05 && r < 2 {
-				return r
-			}
+	if cal := a.promptCalibration.Load(); cal != nil && cal.compactChars > 0 {
+		if r := float64(cal.promptTokens) / float64(cal.compactChars); r > 0.05 && r < 2 {
+			return r
 		}
 	}
 	return fallbackTokPerChar
@@ -640,17 +566,26 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 			a.sink.Emit(event.Event{Kind: event.Usage, ModelRef: a.modelRef, Usage: usage, Pricing: a.pricing, UsageSource: event.UsageSourceCompaction})
 		}
 	}()
-	ch, err := a.prov.Stream(ctx, provider.Request{
+	defer trackPublishedHostStream(ctx, cancel)()
+	req := provider.Request{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: sys},
 			{Role: provider.RoleUser, Content: renderTranscript(region)},
 		},
+		MaxTokens:   a.maxOutputTokens,
 		Temperature: provider.OptionalTemperature(a.temperature),
-	})
+	}
+	if budget, clipped, budgetErr := a.effectiveOutputBudget(req); budgetErr != nil {
+		return "", usage, budgetErr
+	} else if clipped {
+		req.MaxTokens = budget
+	}
+	ch, err := a.prov.Stream(ctx, req)
 	if err != nil {
 		return "", usage, err
 	}
 
+	// Unblock on timeout if the stream stalls while open.
 	var b strings.Builder
 	for {
 		select {
@@ -658,6 +593,9 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 			return "", usage, ctx.Err()
 		case chunk, ok := <-ch:
 			if !ok {
+				if usage != nil && usage.FinishReason == "length" {
+					return "", usage, fmt.Errorf("%w: provider reached the output token limit", errSummaryOutputTruncated)
+				}
 				s := strings.TrimSpace(b.String())
 				if s == "" {
 					return "", usage, fmt.Errorf("summarizer returned empty output")
@@ -680,7 +618,7 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 // Token and request counts from both attempts are merged into the returned Usage.
 func (a *Agent) summarizeWithRetry(ctx context.Context, fold []provider.Message, instructions string) (string, *provider.Usage, error) {
 	summary, usage, err := a.summarize(ctx, fold, instructions)
-	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, errSummaryOutputTruncated) {
 		return summary, usage, err
 	}
 	summary2, usage2, err2 := a.summarize(ctx, fold, instructions)
@@ -735,24 +673,60 @@ func summarizeToolArgs(args string) string {
 	return fmt.Sprintf("{%s} (%d keys)", strings.Join(keys, ", "), len(parsed))
 }
 
-// archiveMessages writes the dropped originals to a timestamped .jsonl (one
-// message per line) under dir, returning the file path.
+// archiveMessages writes the dropped originals to a content-addressed .jsonl
+// (one message per line) under dir. Retrying the same failed/stale compaction
+// therefore reuses one archive instead of creating timestamp duplicates.
 func archiveMessages(dir string, msgs []provider.Message) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, time.Now().Format("20060102-150405.000")+".jsonl")
-	f, err := os.Create(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
 	for _, m := range msgs {
 		if err := enc.Encode(m); err != nil {
 			return "", err
 		}
 	}
+	sum := sha256.Sum256(b.Bytes())
+	path := filepath.Join(dir, "context-"+hex.EncodeToString(sum[:16])+".jsonl")
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	f, err := os.CreateTemp(dir, ".context-archive-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tmpName := f.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if _, err := f.Write(b.Bytes()); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Link(tmpName, path); err != nil {
+		if os.IsExist(err) {
+			return path, nil
+		}
+		return "", err
+	}
+	_ = os.Remove(tmpName)
+	cleanup = false
 	return path, nil
 }

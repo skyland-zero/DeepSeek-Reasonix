@@ -246,6 +246,9 @@ func TestConcurrentAcquireRotateReleaseRace(t *testing.T) {
 }
 
 func TestStaleCleanup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires elevated privileges on Windows CI")
+	}
 	root := t.TempDir()
 	now := time.Now()
 

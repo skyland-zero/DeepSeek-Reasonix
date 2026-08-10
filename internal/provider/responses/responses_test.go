@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -301,7 +302,7 @@ func TestStreamToleratesWebSearchLifecycleEvents(t *testing.T) {
 	}
 }
 
-func TestDeepSeekStatelessReplayPreservesCompletedWebSearchCall(t *testing.T) {
+func TestEnabledStatelessWebSearchPreservesCompletedCallForCompatibleGateway(t *testing.T) {
 	var bodies []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -322,10 +323,7 @@ func TestDeepSeekStatelessReplayPreservesCompletedWebSearchCall(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(Config{Name: "deepseek", APIKey: "key", BaseURL: server.URL, Model: "deepseek-v4-flash", Mode: "stateless", WebSearch: true}).(*client)
-	// The test server is local, so pin the vendor classification to the official
-	// DeepSeek behavior under test without weakening production URL detection.
-	client.vendor = "deepseek"
+	client := New(Config{Name: "compatible", APIKey: "key", BaseURL: server.URL, Model: "deepseek-v4-flash", Mode: "stateless", WebSearch: true}).(*client)
 	first := collect(t, client, provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "search"}}})
 	var replayItems []json.RawMessage
 	for _, chunk := range first {
@@ -359,7 +357,7 @@ func TestDeepSeekStatelessReplayPreservesCompletedWebSearchCall(t *testing.T) {
 	}
 }
 
-func TestResponsesItemsAreIgnoredOutsideOfficialDeepSeekWire(t *testing.T) {
+func TestResponsesItemsAreIgnoredWhenServerWebSearchIsDisabled(t *testing.T) {
 	raw := json.RawMessage(`{"id":"ws_1","type":"web_search_call","status":"completed"}`)
 	client := New(Config{Name: "compatible", BaseURL: "https://gateway.example", Model: "m", Mode: "stateless"}).(*client)
 	body, _, _ := client.buildRequestBody(provider.Request{Messages: []provider.Message{
@@ -382,7 +380,7 @@ func TestDeepSeekReplayDropsMalformedOrIncompleteSearchItems(t *testing.T) {
 		json.RawMessage(`{"id":"fc_1","type":"function_call","status":"completed"}`),
 		json.RawMessage(`{"id":`),
 	}
-	client := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", Mode: "stateless"}).(*client)
+	client := New(Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", Mode: "stateless", WebSearch: true}).(*client)
 	body, _, _ := client.buildRequestBody(provider.Request{Messages: []provider.Message{
 		{Role: provider.RoleUser, Content: "search"},
 		{Role: provider.RoleAssistant, Content: "answer", ResponsesItems: items},
@@ -920,7 +918,7 @@ func TestMessagesToInputTextOnlyStaysStringShape(t *testing.T) {
 }
 
 func TestMessagesToInputEmbedsImagesAsInputImageParts(t *testing.T) {
-	c := New(Config{Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", Extra: map[string]any{"vision": true}}).(*client)
+	c := New(Config{Name: "mimo", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5", Extra: map[string]any{"vision": true}}).(*client)
 	body, _, _ := c.buildRequestBody(provider.Request{Messages: []provider.Message{
 		{Role: provider.RoleUser, Content: "what is this", Images: []string{"data:image/png;base64,AAAA", "data:image/jpeg;base64,BBBB"}},
 	}})
@@ -944,13 +942,38 @@ func TestMessagesToInputEmbedsImagesAsInputImageParts(t *testing.T) {
 		}
 	}
 	// Vision disabled: images are ignored, content stays a string.
-	plain := New(Config{Name: "test", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash"}).(*client)
+	plain := New(Config{Name: "mimo", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5"}).(*client)
 	body2, _, _ := plain.buildRequestBody(provider.Request{Messages: []provider.Message{
 		{Role: provider.RoleUser, Content: "what is this", Images: []string{"data:image/png;base64,AAAA"}},
 	}})
 	items2 := body2["input"].([]map[string]any)
 	if got, ok := items2[0]["content"].(string); !ok || got != "what is this" {
 		t.Fatalf("vision-off user content = %#v, want string", items2[0]["content"])
+	}
+}
+
+func TestOfficialDeepSeekResponsesIgnoresVisionMetadata(t *testing.T) {
+	c := New(Config{
+		Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash",
+		Extra: map[string]any{"vision": true},
+	}).(*client)
+	if c.vision {
+		t.Fatal("official DeepSeek Responses endpoint must ignore vision metadata")
+	}
+	body, _, _ := c.buildRequestBody(provider.Request{Messages: []provider.Message{{
+		Role: provider.RoleUser, Content: "what is this",
+		Images: []string{"data:image/png;base64,AAAA"},
+	}}})
+	items := body["input"].([]map[string]any)
+	if got, ok := items[0]["content"].(string); !ok || got != "what is this" {
+		t.Fatalf("official DeepSeek content = %#v, want plain text", items[0]["content"])
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	if bytes.Contains(encoded, []byte("input_image")) || bytes.Contains(encoded, []byte("base64,AAAA")) {
+		t.Fatalf("official DeepSeek Responses request leaked image payload: %s", encoded)
 	}
 }
 
