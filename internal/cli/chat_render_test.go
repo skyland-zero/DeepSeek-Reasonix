@@ -138,7 +138,7 @@ func TestThinkingCompactStarMarker(t *testing.T) {
 	m.tickThinking()
 	m.tickThinking()
 	plain = ansi.Strip(m.transcript[0])
-	if !strings.Contains(plain, "3s") || !strings.Contains(plain, "¶1500") {
+	if !strings.Contains(plain, "3.0s") || !strings.Contains(plain, "¶1500") {
 		t.Errorf("compact marker should carry elapsed seconds and streamed characters: %q", plain)
 	}
 	if !strings.ContainsAny(plain, "✸✹✺✷") {

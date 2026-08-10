@@ -1182,20 +1182,13 @@ func (m *chatTUI) beginToolRunning(id, name string) {
 		return
 	}
 	m.toolStreamIdx = len(m.transcript)
-	m.commitLine(outputBlock([]string{dim(fmt.Sprintf(i18n.M.ChatToolWorkingFmt, toolWorkingFrames[0], formatElapsed(0)))}))
+	m.commitLine(outputBlock([]string{dim(fmt.Sprintf(i18n.M.ChatToolWorkingFmt, toolWorkingFrames[0], 0.0))}))
 	// Remember the transcript slot for this id so a late ToolProgress for a
 	// previously dispatched (and possibly already collapsed) tool can reuse
 	// it instead of appending a fresh slot at the end of the transcript. For
 	// back-to-back tool calls this keeps each tool's live block directly
 	// under its own card.
 	m.shellTranscriptIdx[id] = m.toolStreamIdx
-}
-
-func formatElapsed(d time.Duration) string {
-	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
-	}
-	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
 // streamAnswer renders the entire pending buffer in-place on every event so

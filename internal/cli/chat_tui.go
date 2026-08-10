@@ -89,7 +89,7 @@ type chatTUI struct {
 
 	state    tuiState
 	runStart time.Time
-	elapsed  int
+	elapsed  float64
 	// retryAttempt/retryMax drive the transient "retrying (n/m)" indicator while
 	// the provider re-attempts the connection; cleared by the next stream event.
 	retryAttempt int
@@ -490,8 +490,8 @@ type tuiShutdownMsg struct{}
 // whatever the controller holds beyond the last snapshot (#5879).
 func shutdownNow() tea.Msg { return tuiShutdownMsg{} }
 
-// elapsedTickMsg fires once a second while a turn runs, driving the "thinking
-// Ns" counter in the status line.
+// elapsedTickMsg fires once a second as the active-turn watchdog heartbeat;
+// the spinner tick drives the elapsed-seconds readout and tool animation.
 type elapsedTickMsg struct{}
 
 // balanceMsg carries the result of an async wallet-balance fetch; text is the
@@ -2027,8 +2027,6 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// elapsedTick is the primary active-turn heartbeat: long turns that
 			// emit no agent events still prove the Bubble Tea loop is alive.
 			m.noteWatchdogHeartbeat("elapsed_tick")
-			m.elapsed = int(time.Since(m.runStart).Seconds())
-			m.tickToolRunning()
 			m.tickSubagentProgress()
 			cmds = append(cmds, elapsedTick())
 		}
@@ -2038,7 +2036,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)
+			m.elapsed = time.Since(m.runStart).Seconds()
 			m.tickThinking()
+			m.tickToolRunning()
 		}
 	}
 
@@ -2798,8 +2798,8 @@ func (m *chatTUI) toggleShellOutput() {
 	}
 }
 
-// toolWorkingFrames is the braille spinner cycled once per second on the
-// "⎿ working · Ns" line of a tool that hasn't streamed output yet.
+// toolWorkingFrames is the braille spinner cycled on each spinner tick (≈100ms)
+// on the "⎿ working · Ns" line of a tool that hasn't streamed output yet.
 var toolWorkingFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // tickToolRunning re-renders the working line of a tool that's dispatched but
@@ -2813,7 +2813,7 @@ func (m *chatTUI) tickToolRunning() {
 	}
 	m.toolStreamFrame++
 	frame := toolWorkingFrames[m.toolStreamFrame%len(toolWorkingFrames)]
-	secs := int(time.Since(m.toolStreamStart).Seconds())
+	secs := time.Since(m.toolStreamStart).Seconds()
 	m.rewriteTranscriptBlock(m.toolStreamIdx, connectorBlock([]string{dim(fmt.Sprintf(i18n.M.ChatToolWorkingFmt, frame, secs))}))
 }
 
@@ -2855,7 +2855,7 @@ func (m *chatTUI) thinkingMarkerLine() string {
 		return dim("  ▎ " + i18n.M.ChatThinking + m.thinkingCharsSuffix())
 	}
 	frame := thinkingStarFrames[m.thinkingFrame%len(thinkingStarFrames)]
-	line := fmt.Sprintf("  "+i18n.M.ChatThinkingLiveFmt, frame, i18n.M.ChatThinking, int(time.Since(m.thinkStart).Seconds()))
+	line := fmt.Sprintf("  "+i18n.M.ChatThinkingLiveFmt, frame, i18n.M.ChatThinking, time.Since(m.thinkStart).Seconds())
 	line += m.thinkingCharsSuffix()
 	return yellow(line)
 }

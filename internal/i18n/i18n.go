@@ -56,10 +56,10 @@ type Messages struct {
 
 	// chat TUI status line / approval banner.
 	ChatThinking                           string // live reasoning marker label, e.g. "thinking…"
-	ChatThinkingLiveFmt                    string // live compact marker, "%s" = star frame, "%s" = label, "%d" = elapsed s
+	ChatThinkingLiveFmt                    string // live compact marker, "%s" = star frame, "%s" = label, "%.1f" = elapsed s
 	ChatThoughtForFmt                      string // collapsed reasoning summary, "%d" = elapsed s
-	ChatStatusThinkingFmt                  string // "%s thinking… (%ds · <cancel hint>)" — %s = spinner, %d = elapsed s
-	ChatToolWorkingFmt                     string // "%s working · %ds" under a running tool — %s = spinner, %d = elapsed s
+	ChatStatusThinkingFmt                  string // "%s thinking… (%.1fs · <cancel hint>)" — %s = spinner, %.1f = elapsed s
+	ChatToolWorkingFmt                     string // "%s working · %.1fs" under a running tool — %s = spinner, %.1f = elapsed s
 	ChatSubagentPhaseQueued                string // sub-agent progress phase label ("queued")
 	ChatSubagentPhaseRunning               string // ("running")
 	ChatSubagentPhaseReasoning             string // ("reasoning")
@@ -73,7 +73,7 @@ type Messages struct {
 	ChatSubagentProgressDoneFmt            string // terminal summary — %s = phase label, %d = duration s ("%s · %ds")
 	ChatSubagentPreviewLabel               string // verbose preview marker ("▎")
 	ChatStatusRetryingFmt                  string // "%s retrying (%d/%d)…" — %s = spinner, %d/%d = attempt/max
-	ChatStatusCancellingFmt                string // "%s stopping… (%ds · Ctrl+C exits)" — %s = spinner, %d = elapsed s
+	ChatStatusCancellingFmt                string // "%s stopping… (%.1fs · Ctrl+C exits)" — %s = spinner, %.1f = elapsed s
 	ChatStatusIdle                         string // shortcuts hint when idle
 	ChatStatusYoloIdle                     string // shortcuts hint when idle in YOLO/bypass mode
 	ChatStatusCycleHint                    string // plan-toggle shortcut hint shown when no modal prompt owns the status row
