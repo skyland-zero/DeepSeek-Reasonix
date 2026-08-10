@@ -2842,7 +2842,7 @@ func (m *chatTUI) thinkingCharsSuffix() string {
 	if m.thinkChars <= 0 {
 		return ""
 	}
-	return " · ¶" + shortTokens(m.thinkChars)
+	return " · ¶" + strconv.Itoa(m.thinkChars)
 }
 
 // thinkingMarkerLine renders the live thinking marker: the animated star frame

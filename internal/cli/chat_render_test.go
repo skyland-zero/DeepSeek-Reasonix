@@ -138,7 +138,7 @@ func TestThinkingCompactStarMarker(t *testing.T) {
 	m.tickThinking()
 	m.tickThinking()
 	plain = ansi.Strip(m.transcript[0])
-	if !strings.Contains(plain, "3s") || !strings.Contains(plain, "¶1.5K") {
+	if !strings.Contains(plain, "3s") || !strings.Contains(plain, "¶1500") {
 		t.Errorf("compact marker should carry elapsed seconds and streamed characters: %q", plain)
 	}
 	if !strings.ContainsAny(plain, "✸✹✺✷") {
@@ -153,7 +153,7 @@ func TestThinkingCompactStarMarker(t *testing.T) {
 		t.Fatalf("compact thinking should collapse to summary + separator + answer, transcript=%v", m.transcript)
 	}
 	plain = ansi.Strip(m.transcript[0])
-	if !strings.Contains(plain, "✶ thought for 3s") || !strings.Contains(plain, "¶1.5K") {
+	if !strings.Contains(plain, "✶ thought for 3s") || !strings.Contains(plain, "¶1500") {
 		t.Errorf("collapsed marker should freeze the star + duration + characters: %q", plain)
 	}
 	if !strings.Contains(m.transcript[0], "\033[38;5;179m") {
