@@ -469,14 +469,14 @@ func (r *mdRenderer) renderTable(buf *strings.Builder, n *extast.Table, src []by
 		}
 	}
 	for i, h := range header {
-		pick(i, visibleWidth(h))
+		pick(i, visibleWidth(normalizeCell(h)))
 	}
 	for i, row := range rows {
 		if r.rowIncomplete(rowNodes[i], src, !finalized) {
 			continue
 		}
 		for i, c := range row {
-			pick(i, visibleWidth(c))
+			pick(i, visibleWidth(normalizeCell(c)))
 		}
 	}
 

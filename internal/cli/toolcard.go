@@ -334,7 +334,7 @@ func dimLines(s string) string {
 // under the two-space margin (the sawtooth seen on resized narrow terminals).
 func iconLineHanging(line string) string {
 	r := []rune(ansi.Strip(line))
-	if len(r) >= 4 && r[0] == ' ' && r[1] == ' ' && r[2] != ' ' && r[3] == ' ' {
+	if len(r) >= 4 && r[0] == ' ' && r[1] == ' ' && r[2] != ' ' && r[2] != '│' && r[3] == ' ' {
 		return outputIndent
 	}
 	return ""
