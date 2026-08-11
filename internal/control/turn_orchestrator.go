@@ -23,11 +23,6 @@ type turnOrchestrator struct {
 	c *Controller
 }
 
-const (
-	goalRunRoundLimit = 16
-	goalRunRoundKey   = "goal model rounds"
-)
-
 type orchestratedTurn struct {
 	input            string
 	raw              string
@@ -89,7 +84,6 @@ func (o *turnOrchestrator) runSubagentSkillTurnsGoalLoop(ctx context.Context, sk
 	// call update_goal itself.
 	if scopeID, goal, ok := o.c.goals.deliveryScope(); ok {
 		ctx = agent.WithDeliveryExecutionScope(ctx, agent.DeliveryExecutionScope{ID: scopeID, TaskText: goal})
-		ctx = agent.WithDefaultRunStepLimit(ctx, goalRunRoundLimit, goalRunRoundKey)
 		recorder := o.c.goals.newTurnRecorder(scopeID, o.c.goals.continuationToken())
 		o.c.goalUsageTee.setActiveRecorder(recorder)
 	}
@@ -278,12 +272,7 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	// events during the turn fold into the goal's observational token total. The span stays
 	// active until the FSM commits (advanceGoalAfterTurn) so evaluator usage
 	// also counts; error paths that skip the FSM clear it explicitly.
-	if goalScopeID, ok := c.goals.goalScopeIDForTurn(continuation); ok {
-		ctx = agent.WithDefaultRunStepLimit(ctx, goalRunRoundLimit, goalRunRoundKey)
-		recorder := c.goals.newTurnRecorder(goalScopeID, c.goals.continuationToken())
-		ctx = tool.WithGoalTurnRecorder(ctx, recorder)
-		c.goalUsageTee.setActiveRecorder(recorder)
-	}
+	ctx = c.bindTurnScope(ctx, continuation)
 	modelInput := input
 	if !turn.synthetic {
 		modelInput = c.withCapabilityRoute(ctx, input, turn.raw)
@@ -493,18 +482,18 @@ func goalPauseFromRunError(err error) (cause, reason string, ok bool) {
 		return "", "", false
 	}
 	switch {
-	case info.Kind == "max_steps" && info.HostOwned && info.Key == goalRunRoundKey:
-		return stopCauseGoalRunBudget,
-			fmt.Sprintf("Goal run budget exhausted (%d model rounds); completed work is saved", info.Limit), true
+	case info.Kind == "task_budget" && info.HostOwned:
+		reason := strings.TrimSpace(info.Reason)
+		if reason == "" {
+			reason = "the Goal reached its spend budget"
+		}
+		return stopCauseBudgetSpend, reason, true
 	case info.Kind == "goal_stuck" && info.HostOwned:
 		reason := strings.TrimSpace(info.Reason)
 		if reason == "" {
 			reason = "host-detected structural no-progress loop"
 		}
 		return stopCauseGoalStuck, reason, true
-	case info.Kind == "todo_stall" && info.HostOwned:
-		return stopCauseGoalStuck,
-			fmt.Sprintf("current todo stalled for %d model rounds without host-observed progress", info.Limit), true
 	default:
 		return "", "", false
 	}

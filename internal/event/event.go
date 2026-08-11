@@ -14,6 +14,7 @@ package event
 import (
 	"encoding/json"
 
+	"reasonix/internal/billing"
 	"reasonix/internal/evidence"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
@@ -507,6 +508,7 @@ const (
 	NoticeCodeEmptyFinal                                        = "empty_final"
 	NoticeCodeExecutorHandoff                                   = "executor_handoff"
 	NoticeCodeToolBudget                                        = "tool_budget"
+	NoticeCodePromptQueued                                      = "prompt_queued"
 	NoticeCodeLoopGuard                                         = "loop_guard"
 	NoticeCodeProgressGuard                                     = "progress_guard"
 	NoticeCodeEvidenceNudge                                     = "evidence_nudge"
@@ -532,7 +534,8 @@ type Event struct {
 	MemoryCitations  []provider.MemoryCitation // Message: local memory references displayed by rich frontends
 	Tool             Tool                      // ToolDispatch / ToolResult
 	Usage            *provider.Usage           // Usage
-	Pricing          *provider.Pricing         // Usage: for cost display (nil = omit cost)
+	Pricing          *provider.Pricing         // Usage: rate card for quote middleware (nil = omit cost)
+	CostQuote        *billing.CostQuote        // Usage: host-side quote; sinks must not reprice
 	Source           string                    // optional display/event source (executor, planner, subagent, ...)
 	UsageSource      string                    // Usage: billable call source; empty means executor for compatibility
 	CacheDiagnostics *CacheDiagnostics         // Usage: cache-churn attribution (nil = N/A)

@@ -132,6 +132,7 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	globalRemote := cfg.Remote.Clone()
 	globalDesktopLanguage := cfg.Desktop.Language
 	globalPricingCurrency := cfg.Desktop.Currency
+	globalBillingDisplayCurrency := cfg.Billing.DisplayCurrency
 	globalTelemetry := cfg.Telemetry
 
 	tomlSources = append(tomlSources, projectTOML)
@@ -164,6 +165,7 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	// A repository must not be able to alter how the user's spend is shown.
 	cfg.Desktop.Language = globalDesktopLanguage
 	cfg.Desktop.Currency = globalPricingCurrency
+	cfg.Billing.DisplayCurrency = globalBillingDisplayCurrency
 	// CLI telemetry is an explicit user-global privacy choice. Project config
 	// cannot opt a user in or out, including when the global value is absent.
 	cfg.Telemetry = globalTelemetry
@@ -227,6 +229,8 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	normalizeLegacyProviderModels(cfg)
 	normalizeDesktopOfficialProviderAccess(cfg)
 	normalizeOfficialDeepSeekModels(cfg)
+	migrateBillingDisplayCurrency(cfg)
+	freezeProviderBillingCurrencies(cfg)
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
@@ -383,11 +387,16 @@ func backfillDeepSeekPro(c *Config) {
 	for _, bp := range Default().Providers {
 		if bp.Name == "deepseek-pro" {
 			bp.APIKeyEnv = flash.APIKeyEnv
-			currency := c.DeepSeekOfficialPricingCurrency()
-			if c.DesktopCurrency() == "" && flash.persistedOfficialCurrency != "" {
+			// Inherit the flash provider's frozen billing currency for list prices.
+			currency := flash.ProviderBillingCurrency()
+			if currency == "" {
 				currency = flash.persistedOfficialCurrency
-				bp.persistedOfficialCurrency = currency
 			}
+			if currency == "" {
+				currency = "USD"
+			}
+			bp.BillingCurrency = currency
+			bp.persistedOfficialCurrency = currency
 			bp.Price = deepSeekV4PriceForModel(currency, proModel)
 			c.Providers = append(c.Providers, bp)
 			return
@@ -405,9 +414,12 @@ func backfillDeepSeekOfficialPrices(c *Config) {
 			continue
 		}
 		backfillDeepSeekOfficialEndpointDefaults(p)
-		currency := c.DeepSeekOfficialPricingCurrency()
-		if c.DesktopCurrency() == "" && p.persistedOfficialCurrency != "" {
+		currency := p.ProviderBillingCurrency()
+		if currency == "" {
 			currency = p.persistedOfficialCurrency
+		}
+		if currency == "" {
+			currency = "USD"
 		}
 		defaults := DeepSeekV4PricesForCurrency(currency)
 		if p.Price != nil {
@@ -789,6 +801,7 @@ func normalizeConfigForEdit(cfg *Config) bool {
 	normalizeLegacyEffort(cfg)
 	normalizeLegacyAgentStepLimits(cfg)
 	changed := normalizeRetiredAutoPlan(cfg)
+	changed = normalizeRetiredMultiThresholdCompaction(cfg) || changed
 	normalizeLegacyMCPTiers(cfg)
 	changed = normalizeLegacyStepFunBaseURLs(cfg) || changed
 	changed = normalizeLegacyLongCatContextWindows(cfg) || changed
@@ -799,9 +812,35 @@ func normalizeConfigForEdit(cfg *Config) bool {
 	normalizeLegacyProviderModels(cfg)
 	normalizeDesktopOfficialProviderAccess(cfg)
 	normalizeOfficialDeepSeekModels(cfg)
+	migrateBillingDisplayCurrency(cfg)
+	freezeProviderBillingCurrencies(cfg)
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
+	return changed
+}
+
+// normalizeRetiredMultiThresholdCompaction clears retired multi-threshold keys
+// so they never reach the Agent. Disk migration removes them on ordinary start;
+// loading still ignores them if migration could not rewrite the file.
+func normalizeRetiredMultiThresholdCompaction(c *Config) bool {
+	if c == nil {
+		return false
+	}
+	changed := c.Agent.SoftCompactRatio != 0 ||
+		c.Agent.ToolResultSnipRatio != 0 ||
+		c.Agent.CompactForceRatio != 0 ||
+		c.Agent.ColdResumePrune != nil ||
+		strings.TrimSpace(c.Agent.ContextEditing) != ""
+	c.Agent.SoftCompactRatio = 0
+	c.Agent.ToolResultSnipRatio = 0
+	c.Agent.CompactForceRatio = 0
+	c.Agent.ColdResumePrune = nil
+	c.Agent.ContextEditing = ""
+	if c.Agent.CompactRatio <= 0 {
+		c.Agent.CompactRatio = Default().Agent.CompactRatio
+		changed = true
+	}
 	return changed
 }
 
@@ -1075,6 +1114,50 @@ func migrateRetiredConfigKeysFile(path string, strip func(string) (string, bool)
 
 func stripLegacyMemoryCompilerLines(raw string) (string, bool) {
 	return stripTOMLKeyLines(raw, "agent", "memory_compiler")
+}
+
+// MigrateLegacyMultiThresholdCompactionForRoot strips retired soft/snip/force keys.
+func MigrateLegacyMultiThresholdCompactionForRoot(root string) (bool, error) {
+	root = resolveRoot(root)
+	paths := make([]string, 0, 2)
+	if userPath := userConfigLoadPath(); userPath != "" {
+		paths = append(paths, userPath)
+	}
+	projectPath := "reasonix.toml"
+	if root != "." {
+		projectPath = filepath.Join(root, "reasonix.toml")
+	}
+	paths = append(paths, projectPath)
+
+	changedAny := false
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		clean := filepath.Clean(path)
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		changed, err := migrateLegacyMultiThresholdCompactionFile(path)
+		if err != nil {
+			return changedAny, fmt.Errorf("migrate deprecated multi-threshold compaction keys in %s: %w", path, err)
+		}
+		changedAny = changedAny || changed
+	}
+	return changedAny, nil
+}
+
+func migrateLegacyMultiThresholdCompactionFile(path string) (bool, error) {
+	return migrateRetiredConfigKeysFile(path, stripLegacyMultiThresholdCompactionLines)
+}
+
+func stripLegacyMultiThresholdCompactionLines(raw string) (string, bool) {
+	return stripTOMLKeyLines(raw, "agent",
+		"soft_compact_ratio",
+		"tool_result_snip_ratio",
+		"compact_force_ratio",
+		"cold_resume_prune",
+		"context_editing",
+	)
 }
 
 func migrateLegacyMCPTiersFile(path string) error {

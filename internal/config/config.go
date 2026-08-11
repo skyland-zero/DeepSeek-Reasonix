@@ -50,6 +50,7 @@ type Config struct {
 	UI               UIConfig            `toml:"ui"`
 	CLI              CLIConfig           `toml:"cli"`
 	Desktop          DesktopConfig       `toml:"desktop"`
+	Billing          BillingConfig       `toml:"billing"`
 	Telemetry        TelemetryConfig     `toml:"telemetry"`
 	Notifications    NotificationsConfig `toml:"notifications"`
 	Agent            AgentConfig         `toml:"agent"`
@@ -282,7 +283,7 @@ type CLIConfig struct {
 // language, terminal colours, or provider-visible prompt/request data.
 type DesktopConfig struct {
 	Language                string   `toml:"language"`                   // auto|en|zh; empty/auto = browser/OS auto-detect
-	Currency                string   `toml:"currency"`                   // user-global auto|CNY|USD pricing preference shared by desktop and CLI
+	Currency                string   `toml:"currency"`                   // legacy display currency; migrated to [billing].display_currency
 	LayoutStyle             string   `toml:"layout_style"`               // classic|workbench|creation; desktop layout style
 	Theme                   string   `toml:"theme"`                      // auto|dark|light; empty resolves to auto
 	ThemeStyle              string   `toml:"theme_style"`                // accent styles: graphite|ember|aurora|midnight|sandstone|porcelain|linen|glacier|deepseek, full palettes: dracula|gruvbox-*|catppuccin-*|nord|solarized-*|onedark|monokai|base16-snazzy|tokyonight-*|rose-pine-*|kanagawa-wave|github
@@ -1293,6 +1294,13 @@ type AgentConfig struct {
 	SubagentEffort      string            `toml:"subagent_effort"`
 	SubagentEfforts     map[string]string `toml:"subagent_efforts"`
 	MaxSubagentDepth    int               `toml:"max_subagent_depth"`
+	// TaskCostBudget lands a task on one summary once it spends this much.
+	TaskCostBudget float64 `toml:"task_cost_budget"`
+	// TaskTimeBudgetMinutes is the same gate on wall clock. Both ship off.
+	TaskTimeBudgetMinutes float64 `toml:"task_time_budget_minutes"`
+	// GoalTokenBudget bounds an unattended Goal loop by cumulative tokens.
+	// Off unless set: a Goal runs until it finishes or you stop it.
+	GoalTokenBudget int `toml:"goal_token_budget"`
 	// MaxSubagentConcurrency bounds how many sub-agents (task, fleet items,
 	// profile skills, nested children) may run at once in one session.
 	// 0 means the default (6). Values outside 1–32 are clamped on load.
@@ -1317,14 +1325,12 @@ type AgentConfig struct {
 	// Deprecated compatibility field paired with AutoPlan. Old TOML remains
 	// readable, but loading clears it and rendering omits it.
 	AutoPlanClassifier string `toml:"auto_plan_classifier"`
-	// Compaction window fractions: soft = notice only, compact = trigger, force = hard ceiling.
+	// Soft/snip/force are retired compatibility keys; only CompactRatio is active.
 	SoftCompactRatio    float64 `toml:"soft_compact_ratio"`
 	ToolResultSnipRatio float64 `toml:"tool_result_snip_ratio"`
 	CompactRatio        float64 `toml:"compact_ratio"`
 	CompactForceRatio   float64 `toml:"compact_force_ratio"`
-	// ContextEditing selects local maintenance (default) or explicitly opted-in
-	// Anthropic native tool clearing. Native is only honored by official
-	// Anthropic endpoints; compatible gateways remain local.
+	// ContextEditing is retired; native tool clearing is no longer an auto path.
 	ContextEditing string `toml:"context_editing"`
 	// Keep controls which compactable messages stay verbatim beyond the current
 	// user-fact/digest floor and recent tail. Empty uses the conservative default
@@ -1368,12 +1374,21 @@ type ProviderEntry struct {
 	resolvedSource    CredentialSource
 	BalanceURL        string `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
 	ContextWindow     int    `toml:"context_window"`
-	// MaxOutputTokens is a protocol-neutral total output budget. Zero lets the
-	// provider choose a safe default, a positive value is explicit, and a
-	// negative value omits optional wire limits. Anthropic still requires one.
+	// MaxOutputTokens is a protocol-neutral total output budget for one turn.
+	// Zero means automatic (not unlimited): ordinary 16K, reasoning 32K, high/max
+	// 64K — DeepSeek's default effort is high, so auto is typically ~64K.
+	// User guidance: 0 recommended; 32768 ordinary coding/cost control;
+	// 65536 heavy reasoning/long tools; 131072 only after finish_reason=length.
+	// A negative value omits optional wire limits when the protocol allows;
+	// Anthropic still requires max_tokens. Never feeds compact_ratio.
 	MaxOutputTokens int                          `toml:"max_output_tokens"`
 	Price           *provider.Pricing            `toml:"price"`  // legacy/provider-wide fallback
 	Prices          map[string]*provider.Pricing `toml:"prices"` // optional per-model prices; keys are model ids
+	// BillingCurrency is the frozen list-price currency (ISO-4217). Independent
+	// of [billing].display_currency; switching display never rewrites this.
+	BillingCurrency string `toml:"billing_currency"`
+	// BillingMode is payg (default) or subscription_equivalent (e.g. MiMo Token Plan).
+	BillingMode string `toml:"billing_mode"`
 
 	persistedOfficialCurrency string
 
@@ -1831,11 +1846,12 @@ const LanguagePolicy = `Reply in the same language the user is using in their mo
 // Default returns the built-in default configuration.
 func Default() *Config {
 	return &Config{
-		ConfigVersion:    5,
+		ConfigVersion:    6,
 		DefaultModel:     "deepseek-flash",
 		CredentialsStore: CredentialsStoreAuto,
 		UI:               UIConfig{Theme: "auto", ShowTurnUsage: true, ShowTurnReceipt: false},
 		Desktop:          DesktopConfig{DefaultToolApprovalMode: "auto", ConversationWidth: "standard"},
+		Billing:          BillingConfig{},
 		Notifications: NotificationsConfig{
 			Enabled:         false,
 			TurnDone:        true,
@@ -1846,14 +1862,15 @@ func Default() *Config {
 			SystemPrompt: DefaultSystemPrompt,
 			// Normal interactive execution has no configurable total round cap. It
 			// is bounded by adaptive progress guards and context compaction instead.
-			MaxSteps:               0,
-			PlannerMaxSteps:        0,
-			AutoPlan:               "off",
-			SoftCompactRatio:       0.5,
-			ToolResultSnipRatio:    0.6,
-			CompactRatio:           0.8,
-			CompactForceRatio:      0.9,
-			ContextEditing:         "local",
+			MaxSteps:        0,
+			PlannerMaxSteps: 0,
+			AutoPlan:        "off",
+			// Soft/snip/force are load-only compatibility; CompactRatio alone drives maintenance.
+			SoftCompactRatio:       0,
+			ToolResultSnipRatio:    0,
+			CompactRatio:           0.85,
+			CompactForceRatio:      0,
+			ContextEditing:         "",
 			MaxSubagentDepth:       2,
 			MaxSubagentConcurrency: 6,
 			MaxParallelWriters:     3,
@@ -1897,6 +1914,7 @@ func Default() *Config {
 				BalanceURL: "https://api.deepseek.com/user/balance", Thinking: "enabled",
 				WebSearch: boolPointer(true), SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high",
 				ContextWindow: 1_000_000, Price: deepSeekV4FlashPriceUSD(),
+				BillingCurrency: "USD", BillingMode: "payg",
 			},
 			{
 				Name: "deepseek-pro", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
@@ -1904,6 +1922,7 @@ func Default() *Config {
 				BalanceURL: "https://api.deepseek.com/user/balance", Thinking: "enabled",
 				WebSearch: boolPointer(true), SupportedEfforts: []string{"disabled", "high", "max"}, DefaultEffort: "high",
 				ContextWindow: 1_000_000, Price: deepSeekV4ProPriceUSD(),
+				BillingCurrency: "USD", BillingMode: "payg",
 			},
 		},
 	}

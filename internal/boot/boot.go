@@ -25,6 +25,7 @@ import (
 
 	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
+	"reasonix/internal/billing"
 	"reasonix/internal/capability"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
@@ -120,14 +121,12 @@ type Options struct {
 	// so each tab loads its own config/skills/hooks without changing the process
 	// cwd — enabling concurrent multi-project sessions.
 	WorkspaceRoot string
-	// AutoPricingCurrency supplies a frontend-resolved pricing region when the
-	// persisted desktop currency and language settings are all automatic. It is
-	// applied to the in-memory config only and never turns Auto into a persisted
-	// CNY/USD choice.
-	AutoPricingCurrency string
 	// StatsSource labels this frontend's usage records (desktop/cli/serve).
 	// Empty disables usage recording for this controller.
 	StatsSource string
+	// OnConfigLoadWarnings accepts resilient-loader warnings. Returning true
+	// lets boot suppress the duplicate migration diagnostic.
+	OnConfigLoadWarnings func([]string) bool
 	// ExtraPlugins are session-scoped MCP servers supplied by a host transport
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to reasonix.toml.
@@ -219,19 +218,19 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	// One-time import of v1/v0.5 legacy config — runs before Load so the freshly
-	// written config + ~/.env are picked up this same boot. CLI Run also calls this
-	// before config-only commands; this call stays as the shared frontend fallback.
+	// Import v1/v0.5 config before Load so this boot sees the new config + ~/.env.
+	// CLI Run also calls this before config-only commands; keep a shared fallback.
 	migrated, migErr := config.MigrateLegacyIfNeededForRoot(root)
 	deepSeekProtocolMigrated, deepSeekProtocolMigErr := config.MigrateLegacyDeepSeekProtocolUserConfig()
 	stepLimitsMigrated, stepLimitMigErr := config.MigrateLegacyAgentStepLimitsForRoot(root)
 	redactToolOutputMigrated, redactToolOutputMigErr := config.MigrateLegacyRedactToolOutputForRoot(root)
 	memoryCompilerMigrated, memoryCompilerMigErr := config.MigrateLegacyMemoryCompilerForRoot(root)
+	multiThresholdMigrated, multiThresholdMigErr := config.MigrateLegacyMultiThresholdCompactionForRoot(root)
 	cfg, err := config.LoadForRoot(root)
 	if err != nil {
 		return nil, err
 	}
-	applyRuntimeAutoPricingCurrency(cfg, opts.AutoPricingCurrency)
+	deepSeekProtocolMigErr = deepSeekProtocolMigrationNoticeError(handleConfigLoadWarnings(opts, cfg), deepSeekProtocolMigErr)
 	// Arm the credential-protection layers from the user-global [secrets]
 	// section before any tool, hook, or plugin subprocess can spawn. Package
 	// globals are correct here because [secrets] is user-global (project
@@ -246,18 +245,36 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// sidecar warnings and host/ui/* publishes land on the same channel as every
 	// later notice. The job manager is session-scoped — its jobs outlive a turn
 	// and are cancelled by Controller.Close.
-	sink := event.Sync(opts.Sink)
+	//
+	// CostQuote must run before every host consumer (stats recorder, CLI
+	// metrics via opts.Sink, ACP/eventwire bridges, Desktop) so all see the
+	// same occurrence-time quote. Order from the agent:
+	//   Coalesce → GoalUsageTee → Sync → CostQuote → [Recorder] → frontend
+	quoteCtx := &event.QuoteContext{
+		DisplayRequest: billing.DisplayRequest{
+			Currency: cfg.ExplicitDisplayCurrency(),
+			Source:   billing.DisplaySourceExplicit,
+		},
+		BillingModeForModel: func(modelRef string) string {
+			entry, ok := cfg.ResolveModel(modelRef)
+			if !ok {
+				return ""
+			}
+			return entry.ProviderBillingMode()
+		},
+	}
+	// Innermost: frontend sink (CLI metrics/ACP/Desktop bridge live here).
+	quoted := opts.Sink
+	// Record billable usage after quoting so history JSONL can store CostQuote.
+	if source := strings.TrimSpace(opts.StatsSource); source != "" {
+		quoted = stats.NewRecorder(quoted, config.StatsDir(), source)
+	}
+	quoted = event.NewCostQuoteSink(quoted, quoteCtx)
+	sink := event.Sync(quoted)
 
 	// Both sink wraps must complete BEFORE the extension UI hub closes over the
 	// sink variable: a sidecar publish during preflight lands on this closure
 	// from a wire-handler goroutine, and any later reassignment races it.
-	// Record billable usage for the "usage statistics" panel. Wrapping here —
-	// outside the per-agent sinks — covers every agent (executor, planner,
-	// sub-agents, guardian) with one recorder, and each record is labelled with
-	// this frontend's StatsSource so the panel can split totals by entry point.
-	if source := strings.TrimSpace(opts.StatsSource); source != "" {
-		sink = stats.NewRecorder(sink, config.StatsDir(), source)
-	}
 	// Goal token-budget accounting: the controller detects this tee and
 	// attributes billable usage to the active goal turn's recorder. Both the
 	// tee and the delta coalescer must ride the shared sink agents emit into
@@ -481,6 +498,17 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			level = event.LevelWarn
 			text = "Deprecated memory_compiler setting was ignored."
 			detail += " The old key could not be removed: " + memoryCompilerMigErr.Error()
+		}
+		sink.Emit(event.Event{Kind: event.Notice, Level: level, Text: text, Detail: detail})
+	}
+	if multiThresholdMigrated || multiThresholdMigErr != nil {
+		level := event.LevelInfo
+		text := "上下文维护已简化为单一自动压缩阈值。"
+		detail := "Context maintenance now uses a single automatic compact_ratio (default 0.85). soft_compact_ratio, tool_result_snip_ratio, compact_force_ratio, cold_resume_prune, and context_editing were removed from config."
+		if multiThresholdMigErr != nil {
+			level = event.LevelWarn
+			text = "Deprecated multi-threshold compaction keys were ignored."
+			detail += " The old keys could not be removed: " + multiThresholdMigErr.Error()
 		}
 		sink.Emit(event.Event{Kind: event.Notice, Level: level, Text: text, Detail: detail})
 	}
@@ -1802,6 +1830,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		MaxSteps:    maxSteps,
 		MaxStepsKey: opts.MaxStepsKey,
 		Temperature: cfg.Agent.Temperature,
+		TaskBudget:  taskBudgetFromConfig(cfg),
 		Pricing:     entry.Price,
 		ModelRef:    modelRef,
 		Gate:        headlessGate,
@@ -1894,6 +1923,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	}
 
 	ctrlOpts := control.Options{
+		TaskBudget:                     taskBudgetFromConfig(cfg),
+		GoalTokenBudget:                cfg.Agent.GoalTokenBudget,
 		Runner:                         runner,
 		Executor:                       executor,
 		Sink:                           sink,
@@ -2192,12 +2223,6 @@ func effectivePlannerModel(cfg *config.Config, opts Options, tokenEconomy bool) 
 		return ""
 	}
 	return strings.TrimSpace(cfg.Agent.PlannerModel)
-}
-
-func applyRuntimeAutoPricingCurrency(cfg *config.Config, currency string) {
-	if cfg != nil {
-		cfg.ApplyRuntimeAutoPricingCurrency(currency)
-	}
 }
 
 func rememberPermissionRule(workspaceRoot, rule string) control.RememberResult {

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"reasonix/internal/billing"
 	"reasonix/internal/provider"
 )
 
@@ -98,10 +99,10 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		} else {
 			b.WriteString("# language = \"zh\"   # desktop UI language; empty/auto = browser/OS auto-detect\n")
 		}
+		// Legacy desktop.currency is still emitted when set so older binaries keep
+		// reading the preference; new writers also own [billing].display_currency.
 		if currency := c.DesktopCurrency(); currency != "" {
-			fmt.Fprintf(&b, "currency = %q   # official pricing currency: CNY|USD; empty/auto follows language\n", currency)
-		} else {
-			b.WriteString("# currency = \"USD\"   # official pricing currency: CNY|USD; empty/auto follows language\n")
+			fmt.Fprintf(&b, "currency = %q   # legacy display currency; prefer [billing].display_currency\n", currency)
 		}
 		fmt.Fprintf(&b, "layout_style = %q   # desktop layout: classic|workbench|creation\n", c.DesktopLayoutStyle())
 		fmt.Fprintf(&b, "theme = %q   # desktop only: auto|dark|light\n", c.DesktopTheme())
@@ -133,6 +134,14 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "display_mode = %q   # desktop: standard|compact transcript display mode\n", c.DesktopDisplayMode())
 		if width := c.DesktopConversationWidth(); width == "full" {
 			fmt.Fprintf(&b, "conversation_width = %q   # desktop: standard|full transcript width; empty = standard\n", width)
+		}
+		b.WriteString("\n")
+
+		b.WriteString("[billing]\n")
+		if pref := c.DisplayCurrencyPref(); pref != "" {
+			fmt.Fprintf(&b, "display_currency = %q   # auto|CNY|USD; display only — does not rewrite provider list prices\n", pref)
+		} else {
+			b.WriteString("# display_currency = \"auto\"   # auto|CNY|USD; display only — does not rewrite provider list prices\n")
 		}
 		b.WriteString("\n")
 	} else if c.Desktop.ProviderAccess != nil {
@@ -227,15 +236,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# reasoning_language = \"zh\"   # visible reasoning language: auto|zh|en\n")
 	}
-	fmt.Fprintf(&b, "soft_compact_ratio  = %s   # notice only; keeps cache-first prefix intact\n", formatFloat(c.Agent.SoftCompactRatio))
-	fmt.Fprintf(&b, "tool_result_snip_ratio = %s   # at compact_ratio, dropping stale tool results replaces the summary if it gets under this\n", formatFloat(c.Agent.ToolResultSnipRatio))
-	fmt.Fprintf(&b, "compact_ratio       = %s   # try compacting when prompt reaches this fraction\n", formatFloat(c.Agent.CompactRatio))
-	fmt.Fprintf(&b, "compact_force_ratio = %s   # force compacting at this high-water mark\n", formatFloat(c.Agent.CompactForceRatio))
-	if strings.TrimSpace(c.Agent.ContextEditing) == "native" {
-		b.WriteString("context_editing     = \"native\"   # opt in to official Anthropic native tool clearing\n")
-	} else {
-		b.WriteString("# context_editing     = \"native\"   # opt in only for official Anthropic native tool clearing; default is local\n")
-	}
+	fmt.Fprintf(&b, "compact_ratio       = %s   # sole auto trigger; presets 0.70/0.80/0.85 (default 0.85)\n", formatFloat(c.Agent.CompactRatio))
 	if c.Agent.Keep != nil {
 		fmt.Fprintf(&b, "keep                = %s   # compaction keep policy: errors, user_marked\n", renderStringArray(c.Agent.Keep))
 	} else {
@@ -246,7 +247,6 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# recent_keep         = 2   # minimum recent messages kept verbatim\n")
 	}
-	fmt.Fprintf(&b, "cold_resume_prune   = %v   # elide stale tool results when reopening a session past the provider cache window\n", c.ColdResumePruneEnabled())
 	if len(c.Agent.PlanModeReadOnlyCommands) > 0 {
 		fmt.Fprintf(&b, "plan_mode_read_only_commands = %s   # legacy compatibility only; Plan bash uses Permissions\n", renderStringArray(c.Agent.PlanModeReadOnlyCommands))
 	} else {
@@ -348,13 +348,24 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				fmt.Fprintf(&b, "context_window = %d   # tokens; compaction triggers near this limit\n", p.ContextWindow)
 			}
 			if p.MaxOutputTokens != 0 {
-				fmt.Fprintf(&b, "max_output_tokens = %d   # total output cap; 0 = provider default, negative = omit when optional\n", p.MaxOutputTokens)
+				fmt.Fprintf(&b, "max_output_tokens = %d   # per-turn total output; 0 = auto (~64K on DeepSeek high), 32768/65536/131072 explicit; never affects compact_ratio\n", p.MaxOutputTokens)
+			} else {
+				b.WriteString("# max_output_tokens = 0       # recommended: automatic (DeepSeek default high → ~64K; not unlimited)\n")
+				b.WriteString("# max_output_tokens = 32768   # ordinary coding / cost control\n")
+				b.WriteString("# max_output_tokens = 65536   # heavy reasoning / long tool loops\n")
+				b.WriteString("# max_output_tokens = 131072  # only after repeated finish_reason=length\n")
 			}
 			if p.Price != nil {
 				fmt.Fprintf(&b, "price       = %s   # provider-wide fallback, per 1M tokens\n", renderPricingInline(p.Price))
 			}
 			if len(p.Prices) > 0 {
 				fmt.Fprintf(&b, "prices      = %s   # per-model prices, per 1M tokens\n", renderPricingMap(p.Prices))
+			}
+			if cur := strings.TrimSpace(p.BillingCurrency); cur != "" {
+				fmt.Fprintf(&b, "billing_currency = %q   # frozen list-price currency; independent of display_currency\n", billing.NormalizeCurrency(cur))
+			}
+			if mode := strings.TrimSpace(p.BillingMode); mode != "" && mode != "payg" {
+				fmt.Fprintf(&b, "billing_mode = %q   # payg|subscription_equivalent\n", mode)
 			}
 			if p.Thinking != "" {
 				fmt.Fprintf(&b, "thinking    = %q\n", p.Thinking)
@@ -930,27 +941,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 			anyAgent = true
 		}
 	}
-	if c.Agent.SoftCompactRatio != d.Agent.SoftCompactRatio {
-		fmt.Fprintf(&agentBuf, "soft_compact_ratio = %s\n", formatFloat(c.Agent.SoftCompactRatio))
-		anyAgent = true
-	}
-	if c.Agent.ToolResultSnipRatio != d.Agent.ToolResultSnipRatio {
-		fmt.Fprintf(&agentBuf, "tool_result_snip_ratio = %s\n", formatFloat(c.Agent.ToolResultSnipRatio))
-		anyAgent = true
-	}
 	if c.Agent.CompactRatio != d.Agent.CompactRatio {
 		fmt.Fprintf(&agentBuf, "compact_ratio = %s\n", formatFloat(c.Agent.CompactRatio))
 		anyAgent = true
-	}
-	if c.Agent.CompactForceRatio != d.Agent.CompactForceRatio {
-		fmt.Fprintf(&agentBuf, "compact_force_ratio = %s\n", formatFloat(c.Agent.CompactForceRatio))
-		anyAgent = true
-	}
-	if c.Agent.ContextEditing != d.Agent.ContextEditing {
-		if strings.TrimSpace(c.Agent.ContextEditing) == "native" {
-			fmt.Fprintf(&agentBuf, "context_editing = %q\n", "native")
-			anyAgent = true
-		}
 	}
 	if c.Agent.Keep != nil && !reflect.DeepEqual(c.Agent.Keep, d.Agent.Keep) {
 		fmt.Fprintf(&agentBuf, "keep = %s\n", renderStringArray(c.Agent.Keep))
@@ -958,10 +951,6 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 	if c.Agent.RecentKeep > 0 && c.Agent.RecentKeep != d.Agent.RecentKeep {
 		fmt.Fprintf(&agentBuf, "recent_keep = %d\n", c.Agent.RecentKeep)
-		anyAgent = true
-	}
-	if c.Agent.ColdResumePrune != d.Agent.ColdResumePrune {
-		fmt.Fprintf(&agentBuf, "cold_resume_prune = %v\n", c.ColdResumePruneEnabled())
 		anyAgent = true
 	}
 	if len(c.Agent.PlanModeReadOnlyCommands) > 0 && !reflect.DeepEqual(c.Agent.PlanModeReadOnlyCommands, d.Agent.PlanModeReadOnlyCommands) {
@@ -1061,6 +1050,12 @@ func RenderTOMLProjectDelta(c *Config) string {
 			}
 			if len(p.Prices) > 0 {
 				fmt.Fprintf(&b, "prices      = %s\n", renderPricingMap(p.Prices))
+			}
+			if cur := strings.TrimSpace(p.BillingCurrency); cur != "" {
+				fmt.Fprintf(&b, "billing_currency = %q\n", billing.NormalizeCurrency(cur))
+			}
+			if mode := strings.TrimSpace(p.BillingMode); mode != "" && mode != "payg" {
+				fmt.Fprintf(&b, "billing_mode = %q\n", mode)
 			}
 			if p.Thinking != "" {
 				fmt.Fprintf(&b, "thinking    = %q\n", p.Thinking)

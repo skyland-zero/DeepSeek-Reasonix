@@ -4,22 +4,25 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/billing"
 )
 
 // ContextInfo is the prompt-vs-window gauge payload plus session totals. Used
 // and Window both zero means no context-window data yet.
 type ContextInfo struct {
-	Used            int                         `json:"used"`
-	Window          int                         `json:"window"`
-	SessionTokens   int                         `json:"sessionTokens"`
-	CompactRatio    float64                     `json:"compactRatio,omitempty"`
-	SessionCost     float64                     `json:"sessionCost,omitempty"`
-	SessionCurrency string                      `json:"sessionCurrency,omitempty"`
-	CacheHitTokens  int                         `json:"cacheHitTokens,omitempty"`
-	CacheMissTokens int                         `json:"cacheMissTokens,omitempty"`
-	Estimated       bool                        `json:"estimated,omitempty"`
-	Sources         map[string]usageSourceStats `json:"sources,omitempty"`
-	Maintenance     *ContextMaintenanceInfo     `json:"maintenance,omitempty"`
+	Used                int                         `json:"used"`
+	Window              int                         `json:"window"`
+	SessionTokens       int                         `json:"sessionTokens"`
+	CompactRatio        float64                     `json:"compactRatio,omitempty"`
+	SessionCost         float64                     `json:"sessionCost,omitempty"`
+	SessionCurrency     string                      `json:"sessionCurrency,omitempty"`
+	CacheHitTokens      int                         `json:"cacheHitTokens,omitempty"`
+	CacheMissTokens     int                         `json:"cacheMissTokens,omitempty"`
+	Estimated           bool                        `json:"estimated,omitempty"`
+	SessionCostComplete bool                        `json:"sessionCostComplete,omitempty"`
+	SessionCostQuote    *billing.CostQuote          `json:"sessionCostQuote,omitempty"`
+	Sources             map[string]usageSourceStats `json:"sources,omitempty"`
+	Maintenance         *ContextMaintenanceInfo     `json:"maintenance,omitempty"`
 }
 
 // ContextMaintenanceInfo is the Wails-safe current-view snapshot. Optional
@@ -29,9 +32,11 @@ type ContextMaintenanceInfo struct {
 	ProjectedTokens   int                            `json:"projectedTokens,omitempty"`
 	SummaryTokens     int                            `json:"summaryTokens,omitempty"`
 	LastSavedTokens   int                            `json:"lastSavedTokens,omitempty"`
-	SnipTrigger       int                            `json:"snipTrigger,omitempty"`
-	FoldTrigger       int                            `json:"foldTrigger,omitempty"`
-	ForceTrigger      int                            `json:"forceTrigger,omitempty"`
+	SnipTrigger       int                            `json:"snipTrigger,omitempty"`  // always 0; legacy compatibility
+	FoldTrigger       int                            `json:"foldTrigger,omitempty"`  // alias of TriggerTokens
+	ForceTrigger      int                            `json:"forceTrigger,omitempty"` // always 0; legacy compatibility
+	TriggerTokens     int                            `json:"triggerTokens,omitempty"`
+	CheckpointState   string                         `json:"checkpointState,omitempty"` // none|restored|applied
 	HardInputCeiling  int                            `json:"hardInputCeiling,omitempty"`
 	Headroom          int                            `json:"headroom,omitempty"`
 	ProjectionVersion uint64                         `json:"projectionVersion,omitempty"`
@@ -69,8 +74,9 @@ func contextMaintenanceInfo(snapshot agent.ContextMaintenanceSnapshot) *ContextM
 	info := &ContextMaintenanceInfo{
 		CanonicalTokens: snapshot.CanonicalTokens, ProjectedTokens: snapshot.ProjectedTokens,
 		SummaryTokens: snapshot.SummaryTokens, LastSavedTokens: snapshot.LastSavedTokens,
-		SnipTrigger: snapshot.SnipTrigger, FoldTrigger: snapshot.FoldTrigger,
-		ForceTrigger: snapshot.ForceTrigger, HardInputCeiling: snapshot.HardInputCeiling,
+		// Snip/Force remain zero for one-version compatibility with older frontends.
+		FoldTrigger: snapshot.TriggerTokens, TriggerTokens: snapshot.TriggerTokens,
+		CheckpointState: snapshot.CheckpointState, HardInputCeiling: snapshot.HardInputCeiling,
 		Headroom: snapshot.Headroom, ProjectionVersion: snapshot.ProjectionVersion,
 		Blocked: snapshot.Blocked,
 	}

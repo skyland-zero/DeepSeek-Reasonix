@@ -12,6 +12,7 @@
 ## Contents
 
 - [Configuration](#configuration)
+- [Billing and display currency](./BILLING.md)
 - [CLI reference](./CLI.md)
 - [Environment variables](#environment-variables)
 - [Web frontend](#web-frontend)
@@ -68,8 +69,12 @@ reasoning_language = "auto"      # visible reasoning text: auto|zh|en
 # max_subagent_depth = 2              # nested delegation depth; set 1 for the old single-layer boundary
 # max_subagent_concurrency = 6        # session-wide sub-agent concurrency (task/fleet/skills)
 # max_parallel_writers = 3            # concurrent writers with non-overlapping write_paths
-tool_result_snip_ratio = 0.6       # at compact_ratio, pruning stale tool output replaces the summary if it gets under this
-# context_editing = "native"       # opt in only for the official Anthropic endpoint; default local
+# compact_ratio = 0.85             # sole auto trigger; presets 0.70 / 0.80 / 0.85
+# max_output_tokens = 0            # recommended: automatic (DeepSeek default high → ~64K; not unlimited)
+# max_output_tokens = 32768        # ordinary coding / cost control
+# max_output_tokens = 65536        # heavy reasoning / long tool loops
+# max_output_tokens = 131072       # only after repeated finish_reason=length
+# max_output_tokens never changes compact_ratio; only the final send-time clip does
 
 [[providers]]
 name        = "deepseek-flash"
@@ -664,7 +669,7 @@ Mode and display shortcuts:
 | `/theme [auto|light|dark|style]` | Shows or switches the CLI theme | Bare `/theme` lists background modes and named palettes (accent styles and full-palette themes such as dracula, gruvbox-*, catppuccin-*, nord, solarized-*, tokyonight-*, rose-pine-*; code and diff highlighting follows the theme). The choice is saved to the user config; `REASONIX_THEME` and `REASONIX_THEME_STYLE` can override it for one run. |
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
 | `Ctrl+B` | Expands or collapses long shell output | Long shell-output hint lines can also be clicked in the transcript; text selection is handled in-app while the full-screen TUI has mouse reporting enabled. |
-| `/goal <objective>`, `/goal status`, `/goal pause`, `/goal resume`, `/goal clear` | Starts, checks, pauses, resumes, or clears Goal | Goal automatically selects a simple, write, or research turn budget. |
+| `/goal <objective>`, `/goal status`, `/goal pause`, `/goal resume`, `/goal clear` | Starts, checks, pauses, resumes, or clears Goal | A Goal is unbounded unless `[agent].goal_token_budget` is set. |
 | `/migrate`, `/migrate --from <legacy-dir>` | Retries legacy migration or imports sessions from a chosen v0.x source | Use `--from` for custom Windows v0.52 install/data directories; it imports sessions only. See [Configuration paths](./CONFIG_PATHS.md). |
 
 Picker and approval shortcuts:
@@ -1139,11 +1144,20 @@ until the goal is complete, blocked, paused, or cleared. Ordinary chat never
 changes collaboration mode implicitly; choose Goal in the composer or use
 `/goal` to start a long-running objective.
 
-Goal runs under a per-class **turn** budget: simple goals get 10 turns, write
-goals 20 turns, and research goals 40 turns. This is a cross-Run continuation
-backstop. Each Goal Run also defaults to 16 model rounds when no explicit
-`max_steps` is configured, then gets one summary-only response before a
-resumable `goal_run_budget` pause. Progress is goal-scoped and novelty based:
+A Goal runs until it finishes, hits a blocker, stops making progress, or you
+stop it. **Nothing bounds it by default** — not turns, not rounds. If you want
+a ceiling on an unattended loop, set one:
+
+```toml
+[agent]
+goal_token_budget = 20000000   # cumulative tokens across the whole goal
+```
+
+Reaching it produces one summary and a resumable `budget_spend` pause, and
+`/goal resume` grants the budget again rather than resuming into an
+immediately exhausted one. Tokens are the unit because they catch both a slow
+expensive loop and a fast empty one, where wall clock catches only the first
+and money is not portable across models. Progress is goal-scoped and novelty based:
 new read/search results, mutations, verification, todo/signoff changes, and
 reviews advance the goal; an exact tool/argument/result repeat does not.
 Cumulative token and real provider request usage is tracked and shown for
@@ -1151,11 +1165,11 @@ diagnostics, but there is
 **no token hard limit** and no pre-provider request admission. In Goal mode, a
 bare bug/crash/exception statement defaults to the write turn class unless the
 user asks only for analysis/explanation or forbids changes. A paused goal keeps its todos, Delivery
-checkpoint, and runtime history — use `/goal resume` to continue (turn-budget
-pauses add one more slice of turns of the same class; Run-budget and structural
-stuck pauses start a fresh Run without extending the outer budget), or `/goal pause` to pause
-a running goal manually. `/goal status` shows the full runtime summary (turns
-used/limit, tokens, requests, observational no-progress streak, extensions).
+checkpoint, and runtime history — use `/goal resume` to continue (a spend pause
+resumes with its budget granted again; structural stuck pauses start a fresh
+Run), or `/goal pause` to pause a running goal manually. `/goal status` shows
+the full runtime summary (turns used, tokens used/limit, requests,
+observational no-progress streak, extensions).
 Within one Run, three repeated identical host failures or six successful
 zero-evidence rounds produce a resumable `goal_stuck` pause. At the end of every goal turn
 the model reports its disposition through the structured `update_goal` tool
@@ -1253,6 +1267,35 @@ accepted during upgrades, but their values are ignored and removed with a
 one-time notice. This prevents a stale hidden limit from truncating automatic
 progress or inherited subagent work. Use the one-off CLI `--max-steps` flag when
 an explicit run budget is needed; unattended bots retain `[bot].max_steps`.
+
+**An ordinary chat task has no limit of any kind by default** — not rounds, not
+tokens, not time, not money. It runs until the model finishes, an adaptive
+guard decides it stopped making progress, or you stop it.
+
+An optional spend gate is available when you want one. It bounds a whole task
+(every "continue" included, until you start unrelated work), and on crossing it
+the task produces one tool-free summary and pauses; the work is saved and the
+next message continues it.
+
+```toml
+[agent]
+task_cost_budget = 5.0            # in the model's pricing currency
+task_time_budget_minutes = 60     # wall clock across the whole task
+```
+
+Both are off unless set. Neither has a default, because a stop is a judgement
+only you can make: no amount of money is portable across models — a budget
+loose enough for a cheap model would land a frontier model within a couple of
+answers — and a long task is as often the job you asked for as it is a runaway.
+
+Cost applies only to a priced model. Without a price table that axis stays
+inactive rather than reading the task as free; use the time axis for a free or
+local model.
+
+Rounds are deliberately not an axis. A turn that reaches a high round count
+without spending much is one whose rounds are individually cheap and fast,
+which is the case least worth interrupting. Use the one-off `--max-steps` flag
+when you specifically want a run bounded by rounds.
 
 Subagent skills inherit the executor model by default. Set `subagent_model` to
 run them on another configured model, or use `subagent_models` to override only
